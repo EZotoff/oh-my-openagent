@@ -115,17 +115,19 @@ export function createAutoRetryDispatcher(
         },
         query: { directory: ctx.directory },
       }
-      // Our own abort leaves a dangling assistant turn with no terminal error, which
-      // the gate's assistant-active check would treat as blocking forever. Skip it.
-      const wasInternallyAborted = internallyAbortedSessions.has(sessionID)
+      // Every runtime-fallback dispatch targets a session whose stream just died
+      // (aborted by session.status path or terminal-errored in session.error path).
+      // The gate's checkToolState would see the dead turn's missing completion marker
+      // as "active" forever, silently dropping the fallback. Bypass it unconditionally;
+      // isSessionActive remains as the real liveness guard.
       const dispatchRetryPrompt = (retrySource: string, queueBehavior?: "defer") => dispatchInternalPrompt({
         mode: "async",
         client: ctx.client,
         sessionID,
         source: retrySource,
         settleMs: 0,
+        checkToolState: false,
         ...(queueBehavior ? { queueBehavior } : {}),
-        ...(wasInternallyAborted ? { checkToolState: false } : {}),
         input: retryPromptInput,
       })
 
