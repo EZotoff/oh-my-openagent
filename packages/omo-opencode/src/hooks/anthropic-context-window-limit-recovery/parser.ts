@@ -22,12 +22,41 @@ const TOKEN_LIMIT_KEYWORDS = [
   "prompt is too long",
   "is too long",
   "context_length_exceeded",
-  "max_tokens",
   "token limit",
   "context length",
   "too many tokens",
   "non-empty content",
 ]
+
+const REQUEST_TOKEN_SCOPE_PHRASES = [
+  "tokens in request",
+  "input tokens",
+  "prompt tokens",
+  "context tokens",
+]
+
+const REQUEST_TOKEN_COMPARISON_PHRASES = [
+  "more than",
+  "exceeds",
+  "exceeded",
+  "greater than",
+  "over",
+]
+
+const REQUEST_TOKEN_MAX_PHRASES = [
+  "max tokens",
+  "maximum tokens",
+  "tokens allowed",
+]
+
+function isRequestTokenOverflowText(text: string): boolean {
+  const lower = text.toLowerCase()
+  const scopeIdx = REQUEST_TOKEN_SCOPE_PHRASES.findIndex((p) => lower.includes(p))
+  if (scopeIdx === -1) return false
+  const comparisonIdx = REQUEST_TOKEN_COMPARISON_PHRASES.findIndex((p) => lower.includes(p))
+  if (comparisonIdx === -1) return false
+  return REQUEST_TOKEN_MAX_PHRASES.some((p) => lower.includes(p))
+}
 
 // Patterns that indicate thinking block structure errors (NOT token limit errors);
 // compaction must not react to them
@@ -101,6 +130,9 @@ function extractMessageIndex(text: string): number | undefined {
 function isTokenLimitError(text: string): boolean {
   if (isThinkingBlockError(text)) {
     return false
+  }
+  if (isRequestTokenOverflowText(text)) {
+    return true
   }
   const lower = text.toLowerCase()
   return TOKEN_LIMIT_KEYWORDS.some((kw) => lower.includes(kw))
