@@ -4,6 +4,7 @@ import {
   type ContextLimitModelCacheState,
 } from "../shared/context-limit-resolver"
 import { log } from "../shared/logger"
+import { isGlmModel } from "../agents/types"
 
 import { resolveCompactionModel } from "./shared/compaction-model-resolver"
 import type {
@@ -13,6 +14,7 @@ import type {
 
 const PREEMPTIVE_COMPACTION_TIMEOUT_MS = 60_000
 const PREEMPTIVE_COMPACTION_THRESHOLD = 0.78
+const GLM_PREEMPTIVE_COMPACTION_THRESHOLD = 0.45
 const PREEMPTIVE_COMPACTION_COOLDOWN_MS = 60_000
 
 declare function setTimeout(handler: () => void, timeout?: number): unknown
@@ -81,7 +83,10 @@ export async function runPreemptiveCompactionIfNeeded(args: {
 
   const totalInputTokens = (cached.tokens.input ?? 0) + (cached.tokens.cache?.read ?? 0)
   const usageRatio = totalInputTokens / actualLimit
-  if (usageRatio < PREEMPTIVE_COMPACTION_THRESHOLD || !cached.modelID) return
+  const threshold = isGlmModel(cached.modelID)
+    ? GLM_PREEMPTIVE_COMPACTION_THRESHOLD
+    : PREEMPTIVE_COMPACTION_THRESHOLD
+  if (usageRatio < threshold || !cached.modelID) return
 
   compactionInProgress.add(sessionID)
   lastCompactionTime.set(sessionID, Date.now())
