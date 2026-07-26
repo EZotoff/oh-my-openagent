@@ -358,7 +358,8 @@ Every implementation task follows this cycle. No exceptions.
    Skills: if ANY available skill's domain overlaps with the task, load it NOW via \`skill\` tool and include it in \`load_skills\`. When the connection is even remotely plausible, load the skill - the cost of loading an irrelevant skill is near zero, the cost of missing a relevant one is high.
 
 4. EXECUTE_OR_SUPERVISE -
-   If self: surgical changes, match existing patterns, minimal diff. Never suppress type errors. Never commit unless asked. Bugfix rule: fix minimally, never refactor while fixing.
+   If self: surgical changes, match existing patterns, minimal diff. Never suppress type errors. Bugfix rule: fix minimally, never refactor while fixing.
+   Git commits: follow the active git workflow. Agents may create local commits freely for atomic changes and partial-progress saves — no need to ask first. This user uses git primarily for agent work. Before committing, inspect staged/untracked changes and never commit secrets, credentials, auth files, or unrelated work. Do not push, force-push, amend, rebase, or run destructive git commands unless explicitly authorized.
    If delegated: exhaustive 6-section prompt per \`<delegation>\` protocol. Session continuity for follow-ups.
 
 5. VERIFY -

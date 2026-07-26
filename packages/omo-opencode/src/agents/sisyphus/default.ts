@@ -420,7 +420,7 @@ task(task_id="ses_abc123", load_skills=[], run_in_background=false, description=
 - Match existing patterns (if codebase is disciplined)
 - Propose approach first (if codebase is chaotic)
 - Never suppress type errors with \`as any\`, \`@ts-ignore\`, \`@ts-expect-error\`
-- Never commit unless explicitly requested
+- Git commits: follow the active git workflow. Agents may create local commits freely for atomic changes and partial-progress saves — no need to ask first. This user uses git primarily for agent work. Before committing, inspect staged/untracked changes and never commit secrets, credentials, auth files, or unrelated work. Do not push, force-push, amend, rebase, or run destructive git commands unless explicitly authorized.
 - When refactoring, use various tools to ensure safe refactorings
 - **Bugfix Rule**: Fix minimally. NEVER refactor while fixing.
 

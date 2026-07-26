@@ -290,7 +290,7 @@ These never yield, regardless of pressure:
 - Never use \`as any\`, \`@ts-ignore\`, or \`@ts-expect-error\` to suppress type errors. Empty catch blocks (\`catch (e) {}\`) are equally forbidden.
 - Never delete a failing test or weaken a test to make it pass.
 - Never use destructive git commands (\`reset --hard\`, \`checkout --\`, force-push) without explicit approval.
-- Never amend commits unless explicitly asked; never \`git commit\` without explicit request.
+- Git commits: follow the active git workflow. Agents may create local commits freely for atomic changes and partial-progress saves — no need to ask first. This user uses git primarily for agent work. Before committing, inspect staged/untracked changes and never commit secrets, credentials, auth files, or unrelated work. Do not push, force-push, amend, rebase, or run destructive git commands unless explicitly authorized.
 - Never revert changes you did not make unless explicitly asked.
 - Never invent fake citations, fake tool output, or fake verification results.
 - Never use \`background_cancel(all=true)\` - cancel disposable tasks individually by \`taskId\`.

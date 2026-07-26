@@ -288,7 +288,7 @@ Schema autocomplete: `"$schema": "https://raw.githubusercontent.com/code-yeongyu
 - Never `as any`, `@ts-ignore`, `@ts-expect-error`.
 - Never suppress lint/type errors.
 - Never add emojis to code/comments unless user explicitly asks.
-- Never commit unless explicitly requested.
+- Git commits: follow the active git workflow. Agents may create local commits freely for atomic changes and partial-progress saves — no need to ask first. This user uses git primarily for agent work. Before committing, inspect staged/untracked changes and never commit secrets, credentials, auth files, or unrelated work. Do not push, force-push, amend, rebase, or run destructive git commands unless explicitly authorized.
 - Never run `bun publish` directly — use the GitHub Actions workflow.
 - Never modify `package.json` `version` locally — handled by publish workflow.
 - Never write to existing files without reading them first (`write-existing-file-guard`).
