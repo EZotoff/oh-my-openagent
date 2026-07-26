@@ -1,4 +1,4 @@
-import { getAgentConfigKey } from "../../shared/agent-display-names"
+import { getAgentConfigKey, normalizeAgentForPrompt } from "../../shared/agent-display-names"
 
 export const subagentSessions = new Set<string>()
 export const syncSubagentSessions = new Set<string>()
@@ -24,7 +24,8 @@ function normalizeRegisteredAgentName(name: string): string {
 }
 
 function normalizeStoredAgentName(name: string): string {
-  return name.replace(ZERO_WIDTH_CHARACTERS_REGEX, "")
+  const cleaned = name.replace(ZERO_WIDTH_CHARACTERS_REGEX, "")
+  return normalizeAgentForPrompt(cleaned) ?? cleaned
 }
 
 export function registerAgentName(name: string): void {

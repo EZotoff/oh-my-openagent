@@ -10,6 +10,7 @@ import {
 import { closeThinkBlockIfNeeded, ensureThinkBlockOpen } from "./event-think-block"
 import { writeToolHeader, writeToolOutput } from "./event-tool-output"
 import { renderAgentHeader, writePaddedText } from "./output-renderer"
+import { normalizeAgentForPrompt } from "../../shared/agent-display-names"
 import type { EventPayload, MessagePartDeltaProps, MessagePartUpdatedProps, MessageUpdatedProps, RunContext } from "./types"
 
 function renderCompletionMetaLine(state: EventState, messageID: string): void {
@@ -186,7 +187,8 @@ export function handleMessageUpdated(ctx: RunContext, payload: EventPayload, sta
     }
   }
 
-  const agent = props?.info?.agent ?? null
+  const rawAgent = props?.info?.agent ?? null
+  const agent = rawAgent ? (normalizeAgentForPrompt(rawAgent) ?? rawAgent) : null
   const model = props?.info?.modelID ?? null
   const variant = props?.info?.variant ?? null
   if (agent !== state.currentAgent || model !== state.currentModel || variant !== state.currentVariant) {

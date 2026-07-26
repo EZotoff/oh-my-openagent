@@ -1,7 +1,7 @@
 /**
  * Agent config keys to display names mapping.
  * Config keys are lowercase (e.g., "sisyphus", "atlas").
- * Display names include suffixes for UI/logs (e.g., "Sisyphus - Ultraworker").
+ * Display names are plain (e.g., "Sisyphus", "Atlas").
  *
  * IMPORTANT: Display names MUST NOT contain parentheses or other characters
  * that are invalid in HTTP header values per RFC 7230. OpenCode passes the
@@ -10,15 +10,15 @@
  * type selector dropdown. Use ` - ` (space-dash-space) instead of `(...)`.
  */
 export const AGENT_DISPLAY_NAMES: Record<string, string> = {
-  sisyphus: "Sisyphus - ultraworker",
-  hephaestus: "Hephaestus - Deep Agent",
-  prometheus: "Prometheus - Plan Builder",
-  atlas: "Atlas - Plan Executor",
+  sisyphus: "Sisyphus",
+  hephaestus: "Hephaestus",
+  prometheus: "Prometheus",
+  atlas: "Atlas",
   "sisyphus-junior": "Sisyphus-Junior",
-  metis: "Metis - Plan Consultant",
-  momus: "Momus - Plan Critic",
-  athena: "Athena - Council",
-  "athena-junior": "Athena-Junior - Council",
+  metis: "Metis",
+  momus: "Momus",
+  athena: "Athena",
+  "athena-junior": "Athena-Junior",
   oracle: "oracle",
   librarian: "librarian",
   explore: "explore",
@@ -95,6 +95,14 @@ const REVERSE_DISPLAY_NAMES: Record<string, string> = Object.fromEntries(
 // Legacy parenthesized display names for backward compatibility.
 // Old configs/sessions may reference these names; resolve them to config keys.
 const LEGACY_DISPLAY_NAMES: Record<string, string> = {
+  "sisyphus - ultraworker": "sisyphus",
+  "hephaestus - deep agent": "hephaestus",
+  "prometheus - plan builder": "prometheus",
+  "atlas - plan executor": "atlas",
+  "metis - plan consultant": "metis",
+  "momus - plan critic": "momus",
+  "athena - council": "athena",
+  "athena-junior - council": "athena-junior",
   "sisyphus (ultraworker)": "sisyphus",
   "hephaestus (deep agent)": "hephaestus",
   "prometheus (plan builder)": "prometheus",
