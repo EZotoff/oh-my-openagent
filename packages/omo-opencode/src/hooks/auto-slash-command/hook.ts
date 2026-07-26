@@ -10,6 +10,7 @@ import { resolveSessionEventID } from "../../shared/event-session-id"
 import {
   AUTO_SLASH_COMMAND_TAG_CLOSE,
   AUTO_SLASH_COMMAND_TAG_OPEN,
+  EXCLUDED_COMMANDS,
 } from "./constants"
 import { createProcessedCommandStore } from "./processed-command-store"
 import type {
@@ -180,6 +181,12 @@ export function createAutoSlashCommandHook(options?: AutoSlashCommandHookOptions
         command: input.command,
         arguments: input.arguments,
       })
+      if (EXCLUDED_COMMANDS.has(input.command.toLowerCase())) {
+        log(`[auto-slash-command] Skipping excluded command: /${input.command}`, {
+          sessionID: input.sessionID,
+        })
+        return
+      }
 
       const parsed = {
         command: input.command,
