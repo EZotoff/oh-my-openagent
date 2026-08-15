@@ -27,6 +27,7 @@ function createDeps(): HookDeps {
     config: {
       enabled: true,
       retry_on_errors: [429, 503, 529],
+      retries_before_fallback: 0,
       max_fallback_attempts: 4,
       cooldown_seconds: 60,
       timeout_seconds: 30,
@@ -147,6 +148,113 @@ describe("createSessionStatusHandler", () => {
     ])
     expect(state.currentModel).toBe("google/gemini-2.5-pro")
     expect(state.pendingFallbackModel).toBe("google/gemini-2.5-pro")
+    SessionCategoryRegistry.clear()
+  })
+
+  it("#given retries_before_fallback = 2 #when retry signals arrive for attempts 1 and 2 #then no abort or fallback dispatch happens", async () => {
+    // given
+    SessionCategoryRegistry.clear()
+    const sessionID = "session-status-retry-budget-low"
+    SessionCategoryRegistry.register(sessionID, "test")
+
+    const deps = createDeps()
+    deps.config.retries_before_fallback = 2
+    const abortCalls: string[] = []
+    const retryCalls: Array<{ sessionID: string; model: string; source: string }> = []
+
+    const handler = createSessionStatusHandler(deps, createHelpers(abortCalls, retryCalls), deps.sessionStatusRetryKeys)
+
+    // when: attempt 1
+    await handler({
+      sessionID,
+      model: "zai-coding-plan/glm-5.3",
+      status: { type: "retry", attempt: 1, message: "Provider is overloaded [retrying in 2s attempt #1]" },
+    })
+    // when: attempt 2
+    await handler({
+      sessionID,
+      model: "zai-coding-plan/glm-5.3",
+      status: { type: "retry", attempt: 2, message: "Provider is overloaded [retrying in 4s attempt #2]" },
+    })
+
+    // then: both within budget — provider keeps retrying the same model
+    expect(abortCalls).toEqual([])
+    expect(retryCalls).toEqual([])
+    expect(deps.sessionStates.has(sessionID)).toBe(false)
+    SessionCategoryRegistry.clear()
+  })
+
+  it("#given retries_before_fallback = 2 #when the retry signal arrives for attempt 3 #then the handler aborts and dispatches the fallback chain", async () => {
+    // given
+    SessionCategoryRegistry.clear()
+    const sessionID = "session-status-retry-budget-exceeded"
+    SessionCategoryRegistry.register(sessionID, "test")
+
+    const deps = createDeps()
+    deps.config.retries_before_fallback = 2
+    const abortCalls: string[] = []
+    const retryCalls: Array<{ sessionID: string; model: string; source: string }> = []
+
+    const handler = createSessionStatusHandler(deps, createHelpers(abortCalls, retryCalls), deps.sessionStatusRetryKeys)
+
+    // when: attempts 1 and 2 pass within budget
+    await handler({
+      sessionID,
+      model: "zai-coding-plan/glm-5.3",
+      status: { type: "retry", attempt: 1, message: "Provider is overloaded [retrying in 2s attempt #1]" },
+    })
+    await handler({
+      sessionID,
+      model: "zai-coding-plan/glm-5.3",
+      status: { type: "retry", attempt: 2, message: "Provider is overloaded [retrying in 4s attempt #2]" },
+    })
+    // when: attempt 3 exceeds the budget
+    await handler({
+      sessionID,
+      model: "zai-coding-plan/glm-5.3",
+      status: { type: "retry", attempt: 3, message: "Provider is overloaded [retrying in 8s attempt #3]" },
+    })
+
+    // then
+    expect(abortCalls).toEqual([sessionID])
+    expect(retryCalls).toEqual([
+      {
+        sessionID,
+        model: "openai/gpt-5.4",
+        source: "session.status",
+      },
+    ])
+    SessionCategoryRegistry.clear()
+  })
+
+  it("#given retries_before_fallback = 0 (legacy default) #when the first retry signal arrives #then the handler falls back immediately", async () => {
+    // given
+    SessionCategoryRegistry.clear()
+    const sessionID = "session-status-retry-budget-zero"
+    SessionCategoryRegistry.register(sessionID, "test")
+
+    const deps = createDeps()
+    const abortCalls: string[] = []
+    const retryCalls: Array<{ sessionID: string; model: string; source: string }> = []
+
+    const handler = createSessionStatusHandler(deps, createHelpers(abortCalls, retryCalls), deps.sessionStatusRetryKeys)
+
+    // when
+    await handler({
+      sessionID,
+      model: "zai-coding-plan/glm-5.3",
+      status: { type: "retry", attempt: 1, message: "Provider is overloaded [retrying in 2s attempt #1]" },
+    })
+
+    // then: legacy behavior — immediate failover on first signal
+    expect(abortCalls).toEqual([sessionID])
+    expect(retryCalls).toEqual([
+      {
+        sessionID,
+        model: "openai/gpt-5.4",
+        source: "session.status",
+      },
+    ])
     SessionCategoryRegistry.clear()
   })
 })

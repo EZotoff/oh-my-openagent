@@ -60,6 +60,24 @@ export function createSessionStatusHandler(
     }
     sessionStatusRetryKeys.set(sessionID, retryKey)
 
+    // Same-model retry budget (EZ-PATCH: retries-before-fallback). OpenCode retries
+    // the same model natively with exponential backoff; each retry emits a retry
+    // status with an incrementing attempt number. Signals within the budget are
+    // ignored so the provider gets retries_before_fallback chances to recover
+    // before OMO aborts the loop and fails over. Default 0 preserves the legacy
+    // fail-on-first-signal behavior.
+    const retriesBeforeFallback = deps.config.retries_before_fallback ?? 0
+    const attemptValue = Number.parseInt(extractRetryAttempt(status.attempt, retryMessage), 10)
+    if (retriesBeforeFallback > 0 && Number.isFinite(attemptValue) && attemptValue <= retriesBeforeFallback) {
+      log(`[${HOOK_NAME}] retry signal within same-model retry budget - letting provider retry`, {
+        sessionID,
+        model,
+        attempt: attemptValue,
+        retriesBeforeFallback,
+      })
+      return
+    }
+
     if (sessionRetryInFlight.has(sessionID)) {
       if (timeoutEnabled) {
         log(`[${HOOK_NAME}] Overriding in-flight retry due to provider auto-retry signal`, {
