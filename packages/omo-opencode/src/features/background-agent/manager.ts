@@ -514,6 +514,27 @@ export class BackgroundManager {
       skippedStatus,
     })
 
+
+    // [EZ-PATCH: resume-skip-keep-running] Gate statuses "active"/"reserved" mean the
+    // resume prompt was dropped while the session is busy (another turn/reservation in
+    // flight), but resume() already re-established the full running state above
+    // (concurrency slot, fresh startedAt, pendingByParent, toast). Rolling the task back
+    // to its terminal snapshot here orphans the continuation: no running task stays bound
+    // to the session, so the eventual session.idle can never complete the task and the
+    // parent waits forever for a notification (observed 2026-08-30, bg_c16e323d).
+    // Keep the task running instead: the busy session is guaranteed to emit session.idle
+    // when the in-flight turn ends, which completes the task and notifies the parent.
+    // Worst case (prompt truly lost, no further idle) is bounded by the task-poller
+    // stale timeout (interrupt + notify), never a permanent deadlock.
+    if (skippedStatus === "active" || skippedStatus === "reserved") {
+      log("[background-agent] resume skipped while session busy; keeping task running until next idle:", {
+        taskId: task.id,
+        sessionID: task.sessionId,
+        skippedStatus,
+      })
+      this.updateBackgroundTaskMarker(task.parentSessionId)
+      return
+    }
     this.cleanupPendingByParent(task)
 
     if (task.concurrencyKey) {

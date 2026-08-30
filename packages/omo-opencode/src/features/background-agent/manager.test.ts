@@ -3062,7 +3062,7 @@ describe("BackgroundManager.resume running-task guard", () => {
 })
 
 describe("BackgroundManager.resume promptAsync gate state", () => {
-  test("restores completed task state when resume prompt is skipped because the session is active", async () => {
+  test("keeps task running when resume prompt is skipped because the session is active", async () => {
     //#given
     let promptCallCount = 0
     const client = {
@@ -3104,19 +3104,20 @@ describe("BackgroundManager.resume promptAsync gate state", () => {
 
     //#then
     expect(promptCallCount).toBe(0)
-    expect(task.status).toBe("completed")
-    expect(task.completedAt).toBe(originalCompletedAt)
-    expect(task.error).toBe("previous terminal note")
-    expect(task.parentSessionId).toBe("parent-session-original")
-    expect(task.parentMessageId).toBe("msg-original")
-    expect(task.concurrencyKey).toBeUndefined()
-    expect(getConcurrencyManager(manager).getCount("explore")).toBe(0)
-    expect(getPendingByParent(manager).get("parent-session-new")).toBeUndefined()
+    expect(task.status).toBe("running")
+    expect(task.completedAt).toBeUndefined()
+    expect(task.error).toBeUndefined()
+    expect(task.parentSessionId).toBe("parent-session-new")
+    expect(task.parentMessageId).toBe("msg-new")
+    expect(task.concurrencyKey).toBeDefined()
+    expect(getConcurrencyManager(manager).getCount("explore")).toBe(1)
+    expect(getPendingByParent(manager).get("parent-session-new")?.has(task.id)).toBe(true)
+    expect(getCompletionTimers(manager).has(task.id)).toBe(false)
 
     manager.shutdown()
   })
 
-  test("restores completed task state when resume prompt is skipped by an existing reservation", async () => {
+  test("keeps task running when resume prompt is skipped by an existing reservation", async () => {
     //#given
     let promptCallCount = 0
     const client = {
@@ -3168,12 +3169,15 @@ describe("BackgroundManager.resume promptAsync gate state", () => {
 
     //#then
     expect(promptCallCount).toBe(1)
-    expect(task.status).toBe("completed")
-    expect(task.parentSessionId).toBe("parent-session-original")
-    expect(task.parentMessageId).toBe("msg-original")
-    expect(task.concurrencyKey).toBeUndefined()
-    expect(getConcurrencyManager(manager).getCount("explore")).toBe(0)
-    expect(getPendingByParent(manager).get("parent-session-new")).toBeUndefined()
+    expect(task.status).toBe("running")
+    expect(task.completedAt).toBeUndefined()
+    expect(task.error).toBeUndefined()
+    expect(task.parentSessionId).toBe("parent-session-new")
+    expect(task.parentMessageId).toBe("msg-new")
+    expect(task.concurrencyKey).toBeDefined()
+    expect(getConcurrencyManager(manager).getCount("explore")).toBe(1)
+    expect(getPendingByParent(manager).get("parent-session-new")?.has(task.id)).toBe(true)
+    expect(getCompletionTimers(manager).has(task.id)).toBe(false)
 
     manager.shutdown()
   })
