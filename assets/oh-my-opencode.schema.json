@@ -6178,6 +6178,11 @@
                 "type": "number"
               }
             },
+            "retries_before_fallback": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 10
+            },
             "max_fallback_attempts": {
               "type": "number",
               "minimum": 1,

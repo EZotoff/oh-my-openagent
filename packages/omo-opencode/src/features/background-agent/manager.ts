@@ -32,6 +32,7 @@ import {
 import { SessionCategoryRegistry } from "../../shared/session-category-registry"
 import { applySessionPromptParams } from "../../shared/session-prompt-params-helpers"
 import { setSessionTools } from "../../shared/session-tools-store"
+import { normalizeModelFormat } from "../../shared/model-format-normalizer"
 import { clearSessionAgent, setSessionAgent, subagentSessions, updateSessionAgent } from "../claude-code-session-state"
 import { MESSAGE_STORAGE } from "../hook-message-injector"
 import { getTaskToastManager } from "../task-toast-manager"
@@ -758,12 +759,37 @@ export class BackgroundManager {
 
   private async startTask(item: QueueItem): Promise<void> {
     const { task, input } = item
-    const attemptID = item.attemptID ?? ensureCurrentAttempt(task, input.model).attemptId
+
+    // [EZ-PATCH: model-less-spawn-fallback] When input.model is undefined (e.g. the
+    // `general` subagent — an OpenCode-native type not indexed by OMO agents/categories),
+    // session.create would otherwise inherit the TUI's selected model, bypassing every
+    // OMO model assignment. Fall back to: explicit → parent session model → small_model.
+    let effectiveModel = input.model
+    if (!effectiveModel) {
+      if (input.parentModel) {
+        effectiveModel = {
+          providerID: input.parentModel.providerID,
+          modelID: input.parentModel.modelID,
+        }
+      } else {
+        try {
+          const cfg = await this.client.config.get()
+          const smallModelStr = (cfg as { data?: { small_model?: string } })?.data?.small_model
+          const parsed = normalizeModelFormat(smallModelStr)
+          if (parsed) {
+            effectiveModel = { providerID: parsed.providerID, modelID: parsed.modelID }
+          }
+        } catch {
+          // config read failed; leave effectiveModel undefined (preserves prior behavior)
+        }
+      }
+    }
+    const attemptID = item.attemptID ?? ensureCurrentAttempt(task, effectiveModel).attemptId
 
     log("[background-agent] Starting task:", {
       taskId: task.id,
       agent: input.agent,
-      model: input.model,
+      model: effectiveModel,
     })
 
     const concurrencyKey = this.getConcurrencyKeyFromInput(input)
@@ -783,12 +809,12 @@ export class BackgroundManager {
         parentID: input.parentSessionId,
         title: `${input.description} (@${input.agent} subagent)`,
         ...(input.sessionPermission ? { permission: input.sessionPermission } : {}),
-        ...(input.model
+        ...(effectiveModel
           ? {
               model: {
-                id: input.model.modelID,
-                providerID: input.model.providerID,
-                ...(input.model.variant ? { variant: input.model.variant } : {}),
+                id: effectiveModel.modelID,
+                providerID: effectiveModel.providerID,
+                ...(effectiveModel.variant ? { variant: effectiveModel.variant } : {}),
               },
             }
           : {}),
@@ -832,7 +858,7 @@ export class BackgroundManager {
       return
     }
 
-    const boundAttempt = bindAttemptSession(task, attemptID, sessionID, input.model)
+    const boundAttempt = bindAttemptSession(task, attemptID, sessionID, effectiveModel)
     if (!boundAttempt) {
       clearDelegatedChildSessionBootstrap(sessionID)
       clearSessionAgent(sessionID)
@@ -895,16 +921,16 @@ The fallback retry session is now created and can be inspected directly.
     // Fire-and-forget prompt via promptAsync (no response body needed)
     // OpenCode prompt payload accepts model provider/model IDs and top-level variant only.
     // Temperature/topP and provider-specific options are applied through chat.params.
-    const launchModel = input.model
+    const launchModel = effectiveModel
       ? {
-          providerID: input.model.providerID,
-          modelID: input.model.modelID,
+          providerID: effectiveModel.providerID,
+          modelID: effectiveModel.modelID,
         }
       : undefined
-    const launchVariant = input.model?.variant
+    const launchVariant = effectiveModel?.variant
 
-    if (input.model) {
-      applySessionPromptParams(sessionID, input.model)
+    if (effectiveModel) {
+      applySessionPromptParams(sessionID, effectiveModel)
     }
 
     const userDenied: Record<string, boolean> = {}
@@ -944,7 +970,7 @@ The fallback retry session is now created and can be inspected directly.
     log("[background-agent] Calling prompt (fire-and-forget) for launch with:", {
       sessionID,
       agent: input.agent,
-      model: input.model,
+      model: effectiveModel,
       hasSkillContent: !!input.skillContent,
       promptLength: input.prompt.length,
     })
