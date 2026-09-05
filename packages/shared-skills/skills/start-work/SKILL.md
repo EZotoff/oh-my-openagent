@@ -180,8 +180,9 @@ When all top-level checkboxes in `## TODOs` and `## Final Verification Wave` are
 
 1. Run the plan's final verification commands.
 2. For PR/branch work, finish the lifecycle from the task-owned worktree: sync `.omo/` state back to the main repo, create or update the PR, wait for review/verification gates, merge by default unless explicitly opted out, and remove the worktree only after successful merge or explicit handoff.
-3. Remove or mark the Boulder work as completed.
-4. Print an `ORCHESTRATION COMPLETE` block with the plan path, verification commands, artifacts, and cleanup receipts.
+3. For direct (non-PR) worktree executions, reclaim before finishing: merge the branch back (`git merge --no-ff <branch>` from the main worktree), remove the worktree, and delete the branch with `git branch -d` (never `-D`) — or use `worktree_delete` with the branch/path target. A dirty worktree must be diffed against master and its unique work ported into the merge or kept on an explicit branch before removal; if the residue is genuinely worthless, say so explicitly in the final report. A worktree left behind is a leak, not a safety net. Record the teardown as a cleanup receipt (worktree removed, branch deleted or kept-with-reason) in the `ORCHESTRATION COMPLETE` block.
+4. Remove or mark the Boulder work as completed.
+5. Print an `ORCHESTRATION COMPLETE` block with the plan path, verification commands, artifacts, and cleanup receipts.
 
 ## Hard rules
 
