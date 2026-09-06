@@ -8,6 +8,7 @@ import { createChatMessageHandler } from "./plugin/chat-message"
 import { createCommandExecuteBeforeHandler } from "./plugin/command-execute-before"
 import { createMessagesTransformHandler } from "./plugin/messages-transform"
 import { createSystemTransformHandler } from "./plugin/system-transform"
+import { getMainSessionID, subagentSessions } from "./features/claude-code-session-state"
 import { getUltraworkMessage } from "./hooks/keyword-detector/ultrawork"
 import { createEventHandler } from "./plugin/event"
 import { createToolDefinitionHandler } from "./plugin/tool-definition"
@@ -75,6 +76,10 @@ export function createPluginInterface(args: {
     "experimental.chat.system.transform": createSystemTransformHandler(
       pluginConfig.default_mode,
       getUltraworkMessage,
+      {
+        isSubagentSession: (sessionID) => subagentSessions.has(sessionID),
+        getMainSessionID,
+      },
     ),
 
     config: managers.configHandler,
