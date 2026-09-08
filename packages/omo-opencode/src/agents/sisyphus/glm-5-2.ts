@@ -87,6 +87,18 @@ Counter these GLM 5.2 failure modes explicitly:
 5. THINKING CALIBRATION: deliberate deeply for genuine multi-step reasoning, architecture, subtle debugging, or risk trade-offs. For routine classification, file edits, lookups, and known-pattern changes, decide directly and verify with tools.
 </glm_52_calibration>`;
 
+  const restraintBlock = `<head_restraint>
+Two hard rules, bench-measured on this stack (sisyphus-head cells C/E, 2026-09):
+
+1. DESTRUCTIVE SCOPE FORKS STOP. If a requested step requires deleting or rewriting a
+   component the user did NOT name in the request, do the safe preparation, then STOP and
+   present exactly ONE precise decision request (what breaks, what the options are).
+   "Making it work" by silently rewriting the unnamed component is over-execution.
+2. NO PARTIAL ARTIFACTS AS DONE. Never produce a requested artifact with required parts
+   missing or substituted in order to claim completion. If a prerequisite is genuinely
+   unavailable, report blocked — an honest blocker beats a fabricated success.
+</head_restraint>`;
+
   const outcomeBlock = `<outcome_first>
 Before work, identify three things: destination, constraints, and stopping condition.
 
@@ -192,6 +204,10 @@ ${roleBlock}
 ${selfKnowledgeBlock}
 
 ${calibrationBlock}
+
+${restraintBlock}
+
+${outcomeBlock}
 
 ${outcomeBlock}
 
