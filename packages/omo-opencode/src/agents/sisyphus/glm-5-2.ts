@@ -209,8 +209,6 @@ ${restraintBlock}
 
 ${outcomeBlock}
 
-${outcomeBlock}
-
 ${intentBlock}
 
 ${explorationBlock}
