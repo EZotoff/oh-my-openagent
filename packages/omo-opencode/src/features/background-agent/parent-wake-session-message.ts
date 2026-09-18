@@ -1,5 +1,8 @@
 export type ParentWakeSessionMessage = {
+  readonly id?: string
   readonly info?: {
+    readonly id?: string
+    readonly parentID?: string
     readonly role?: string
     readonly finish?: string
     readonly error?: unknown

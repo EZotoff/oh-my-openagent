@@ -7,12 +7,15 @@ import { sendParentWakePrompt } from "./parent-wake-prompt-dispatch"
 import type { ToolWaitDeferralDecision } from "./parent-wake-session-history"
 import type { ParentWakeSessionInspector } from "./parent-wake-session-inspector"
 import type { ParentWakeNotifierDeps } from "./parent-wake-notifier-types"
+import type { WakeJournal } from "./wake-journal"
 
 type ParentWakeFlushRunnerDeps = {
   readonly notifierDeps: ParentWakeNotifierDeps
   readonly pendingQueue: ParentWakePendingQueue
   readonly dispatchedTracker: ParentWakeDispatchedTracker
   readonly sessionInspector: ParentWakeSessionInspector
+  readonly wakeJournal: WakeJournal
+  readonly onDeadLetter: (wakeID: string, reason: string) => void
 }
 
 const PENDING_PARENT_WAKE_MAX_ACTIVE_DEFER_MS = 60_000
@@ -213,6 +216,15 @@ export class ParentWakeFlushRunner {
       readonly skipPromptGateStatusCheck?: boolean
     },
   ): Promise<void> {
+    const wakeID = latestWake.wakeID
+    const claim = wakeID ? this.deps.wakeJournal.claim(wakeID, { allowDispatchedReclaim: true }) : undefined
+    if (claim && claim.status !== "claimed") {
+      if (claim.status === "terminal") {
+        this.deps.pendingQueue.deleteWake(sessionID)
+        if (claim.entry?.state === "dead-letter") this.deps.onDeadLetter(wakeID, claim.entry.lastError ?? "retry budget exhausted")
+      }
+      return
+    }
     // Mark the dispatch in-flight BEFORE the pending entry is deleted so there is
     // never an observable instant where neither the pending queue, the dispatched
     // tracker, nor this marker reports an owed wake. The dispatch await below can
@@ -243,6 +255,17 @@ export class ParentWakeFlushRunner {
         trackDispatchedWake: (wake, dispatchedAt) => this.deps.dispatchedTracker.trackWake(sessionID, wake, dispatchedAt),
         requeueWake: (wake) => this.requeueWake(sessionID, wake),
         scheduleFlush: (delayMs) => this.schedulePendingParentWakeFlush(sessionID, delayMs),
+        onDispatchAccepted: () => {
+          if (wakeID && claim) this.deps.wakeJournal.markDispatched(wakeID, claim.generation, null)
+        },
+        onDispatchDeferred: (reason) => {
+          if (!wakeID) return
+          const outcome = this.deps.wakeJournal.failOrRequeue(wakeID, reason)
+          if (outcome === "dead-letter") this.deps.onDeadLetter(wakeID, reason)
+        },
+        onDispatchSuppressed: () => {
+          if (wakeID) this.deps.wakeJournal.consume(wakeID, "duplicate dispatch suppressed")
+        },
       })
     } finally {
       this.deps.dispatchedTracker.clearInFlight(sessionID)
@@ -289,5 +312,16 @@ export class ParentWakeFlushRunner {
 
   private requeueWake(sessionID: string, latestWake: PendingParentWake): void {
     this.deps.pendingQueue.requeueWake(sessionID, latestWake)
+  }
+
+  async showDeadLetterToast(journalPath: string): Promise<void> {
+    await this.deps.notifierDeps.client.tui.showToast({
+      body: {
+        title: "Parent wake dead-lettered",
+        message: `Automatic replay stopped. Inspect ${journalPath}`,
+        variant: "error",
+        duration: 10_000,
+      },
+    })
   }
 }

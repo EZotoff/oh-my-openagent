@@ -8,6 +8,7 @@ export type ParentWakePromptContext = {
 }
 
 export type PendingParentWake = {
+  wakeID?: string
   promptContext: ParentWakePromptContext
   notifications: string[]
   shouldReply: boolean
@@ -22,6 +23,7 @@ export type PendingParentWake = {
 export function resolveParentWakePromptContext(promptContext: ParentWakePromptContext): ParentWakePromptContext {
   const resolvedAgent = resolveRegisteredAgentName(promptContext.agent)
   return {
+    ...(wake.wakeID !== undefined ? { wakeID: wake.wakeID } : {}),
     ...promptContext,
     ...(resolvedAgent ? { agent: resolvedAgent } : {}),
     ...(promptContext.model ? { model: { ...promptContext.model } } : {}),

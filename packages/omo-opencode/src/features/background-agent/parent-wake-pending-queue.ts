@@ -47,6 +47,7 @@ export class ParentWakePendingQueue {
     notification: string,
     promptContext: ParentWakePromptContext,
     shouldReply: boolean,
+    wakeID?: string,
   ): void {
     const now = Date.now()
     const resolvedPromptContext = resolveParentWakePromptContext(promptContext)
@@ -67,6 +68,7 @@ export class ParentWakePendingQueue {
     }
 
     this.pendingParentWakes.set(sessionID, {
+      ...(wakeID !== undefined ? { wakeID } : {}),
       promptContext: resolvedPromptContext,
       notifications: [notification],
       shouldReply,
