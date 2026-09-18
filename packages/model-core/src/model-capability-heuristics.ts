@@ -70,12 +70,14 @@ export const HEURISTIC_MODEL_FAMILY_REGISTRY: ReadonlyArray<HeuristicModelFamily
     // Excludes k2p6, k2-p6, k2.p6 from kimi-for-coding which support thinking (#4418).
     pattern: /(?:kimi|k2(?![-.]?p\d))/,
     variants: ["low", "medium", "high"],
+    reasoningEfforts: ["low", "medium", "high", "max"],
     supportsThinking: false,
   },
   {
     family: "glm",
     includes: ["glm"],
     variants: ["low", "medium", "high"],
+    reasoningEfforts: ["low", "medium", "high", "max"],
   },
   {
     family: "minimax",
@@ -87,10 +89,8 @@ export const HEURISTIC_MODEL_FAMILY_REGISTRY: ReadonlyArray<HeuristicModelFamily
     family: "deepseek",
     includes: ["deepseek"],
     variants: ["low", "medium", "high", "max"],
-    reasoningEfforts: ["high", "max"],
+    reasoningEfforts: ["low", "medium", "high", "max"],
     reasoningEffortAliases: {
-      low: "high",
-      medium: "high",
       xhigh: "max",
     },
   },
