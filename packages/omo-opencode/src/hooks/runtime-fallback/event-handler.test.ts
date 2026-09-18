@@ -44,7 +44,12 @@ function createDeps(): HookDeps {
   }
 }
 
-function createHelpers(deps: HookDeps, abortCalls: string[], clearCalls: string[]): AutoRetryHelpers {
+function createHelpers(
+  deps: HookDeps,
+  abortCalls: string[],
+  clearCalls: string[],
+  sameModelCalls: string[] = [],
+): AutoRetryHelpers {
   return {
     abortSessionRequest: async (sessionID: string) => {
       abortCalls.push(sessionID)
@@ -56,11 +61,57 @@ function createHelpers(deps: HookDeps, abortCalls: string[], clearCalls: string[
     scheduleSessionFallbackTimeout: () => {},
     autoRetryWithFallback: async () => {},
     resolveAgentForSessionFromContext: async () => undefined,
-    cleanupStaleSessions: () => {},
+     cleanupStaleSessions: () => {},
+    clearSameModelRetry: (sessionID: string) => {
+      sameModelCalls.push(`clear:${sessionID}`)
+    },
+    scheduleSameModelRetry: (sessionID: string, model: string) => {
+      sameModelCalls.push(`schedule:${sessionID}:${model}`)
+    },
   }
 }
 
-describe("createEventHandler", () => {
+ describe("createEventHandler", () => {
+  it("#given a terminal non-quota rate limit error #when session.error fires #then the same current model is scheduled without fallback", async () => {
+    // given
+    const sessionID = "session-rate-limit-same-model"
+    const deps = createDeps()
+    const state = createFallbackState("openai/gpt-5.4")
+    deps.sessionStates.set(sessionID, state)
+    const sameModelCalls: string[] = []
+    const handler = createEventHandler(deps, createHelpers(deps, [], [], sameModelCalls))
+
+    // when
+    await handler({
+      event: {
+        type: "session.error",
+        properties: {
+          sessionID,
+          model: "openai/gpt-5.4",
+          error: { statusCode: 429, message: "Rate limit reached for requests" },
+        },
+      },
+    })
+
+    // then
+    expect(sameModelCalls).toEqual([`schedule:${sessionID}:openai/gpt-5.4`])
+    expect(state.currentModel).toBe("openai/gpt-5.4")
+    expect(state.attemptCount).toBe(0)
+  })
+
+  it("#given same-model retry state #when the session is deleted or stopped #then retry state is cleared", async () => {
+    // given
+    const deps = createDeps()
+    const sameModelCalls: string[] = []
+    const handler = createEventHandler(deps, createHelpers(deps, [], [], sameModelCalls))
+
+    // when
+    await handler({ event: { type: "session.deleted", properties: { sessionID: "deleted" } } })
+    await handler({ event: { type: "session.stop", properties: { sessionID: "stopped" } } })
+
+    // then
+    expect(sameModelCalls).toEqual(["clear:deleted", "clear:stopped"])
+  })
   it("#given a session retry dedupe key #when session.stop fires #then the retry dedupe key is cleared", async () => {
     // given
     const sessionID = "session-stop"

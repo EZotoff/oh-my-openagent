@@ -4,12 +4,14 @@ import type { OhMyOpenCodeConfig, RuntimeFallbackConfig } from "../../config"
 import { SessionCategoryRegistry } from "../../shared/session-category-registry"
 import { releaseAllPromptAsyncReservationsForTesting } from "../shared/prompt-async-gate"
 import { createRuntimeFallbackHook } from "./hook"
+import { installRuntimeFallbackTestClock, restoreRuntimeFallbackTestClock } from "./test-timeout-clock.test-support"
 import type { RuntimeFallbackPluginInput } from "./types"
 
 describe("runtime-fallback AI SDK retryable session errors", () => {
   afterEach(() => {
     SessionCategoryRegistry.clear()
     releaseAllPromptAsyncReservationsForTesting()
+    restoreRuntimeFallbackTestClock()
   })
 
   function createRuntimeFallbackConfig(): RuntimeFallbackConfig {
@@ -38,9 +40,10 @@ describe("runtime-fallback AI SDK retryable session errors", () => {
     }
   }
 
-  test("dispatches fallback for nested AI SDK retryable Cloudflare timeout errors", async () => {
+  test("retries the same model for nested AI SDK retryable Cloudflare timeout errors", async () => {
     //#given
     const promptCalls: Array<Record<string, unknown>> = []
+    const clock = installRuntimeFallbackTestClock()
     const hook = createRuntimeFallbackHook(
       unsafeTestValue<RuntimeFallbackPluginInput>({
         client: {
@@ -60,6 +63,7 @@ describe("runtime-fallback AI SDK retryable session errors", () => {
       }),
       { config: createRuntimeFallbackConfig(), pluginConfig: createPluginConfig() },
     )
+    await clock.advanceBy(1_000)
     const sessionID = "test-session-ai-sdk-cloudflare-timeout"
     SessionCategoryRegistry.register(sessionID, "test")
 
@@ -86,11 +90,12 @@ describe("runtime-fallback AI SDK retryable session errors", () => {
           },
         },
       },
-    })
+     })
+    await clock.advanceBy(1_000)
 
     //#then
     expect(promptCalls).toHaveLength(1)
     const promptBody = promptCalls[0]?.body as { model?: { providerID?: string; modelID?: string } } | undefined
-    expect(promptBody?.model).toEqual({ providerID: "openai", modelID: "gpt-5.4" })
+    expect(promptBody?.model).toEqual({ providerID: "openai", modelID: "gpt-5.5-fast" })
   })
 })

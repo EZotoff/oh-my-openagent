@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 
-import { DEFAULT_PROMPT_QUEUE_RETRY_MS, releaseAllPromptAsyncReservationsForTesting } from "../../shared/prompt-async-gate"
+import { releaseAllPromptAsyncReservationsForTesting } from "../../shared/prompt-async-gate"
 import { setPromptReservation } from "../../shared/prompt-async-gate/reservations"
 import { createAutoRetryHelpers } from "./auto-retry"
 import { createFallbackState } from "./fallback-state"
@@ -133,12 +133,12 @@ describe("createAutoRetryDispatcher reserved-session retry (#5109)", () => {
     expect(state.pendingFallbackPromptMayHaveBeenAccepted).toBe(true)
   })
 
-  test("#given the failed assistant is still active #when auto retry runs #then the fallback dispatch is queued until the assistant unblocks", async () => {
+  test("#given the failed assistant is still active #when auto retry runs #then the dead-stream check is bypassed and dispatch fires", async () => {
     // given
     const promptCalls = { count: 0 }
     const deps = createDeps(promptCalls)
     const sessionID = "session-active-assistant-then-unblocked"
-    let assistantIsActive = true
+    const assistantIsActive = true
     deps.ctx.client.session.messages = async () => ({
       data: assistantIsActive
         ? [
@@ -170,17 +170,10 @@ describe("createAutoRetryDispatcher reserved-session retry (#5109)", () => {
     const state = createFallbackState("anthropic/claude-opus-4-7")
     state.pendingFallbackModel = "openai/gpt-5.4"
     deps.sessionStates.set(sessionID, state)
-    const clock = installRuntimeFallbackTestClock()
-
-    // when
-    await helpers.autoRetryWithFallback(sessionID, "openai/gpt-5.4", undefined, "session.error")
-    expect(promptCalls.count).toBe(0)
-    assistantIsActive = false
-    await flushPromptGateMicrotasks()
-    await clock.advanceBy(DEFAULT_PROMPT_QUEUE_RETRY_MS)
-    await flushPromptGateMicrotasks()
-
-    // then
+     // when
+     await helpers.autoRetryWithFallback(sessionID, "openai/gpt-5.4", undefined, "session.error")
+ 
+     // then
     expect(promptCalls.count).toBe(1)
     expect(deps.sessionAwaitingFallbackResult.has(sessionID)).toBe(true)
     expect(state.pendingFallbackModel).toBe("openai/gpt-5.4")
@@ -217,7 +210,7 @@ describe("createAutoRetryDispatcher reserved-session retry (#5109)", () => {
     expect(deps.sessionAwaitingFallbackResult.has(sessionID)).toBe(true)
   })
 
-  test("#given a session NOT internally aborted whose assistant turn is genuinely active #when auto retry runs #then the dispatch is still withheld (active-check preserved for live turns)", async () => {
+  test("#given a session not internally aborted whose failed assistant turn appears active #when auto retry runs #then the dead-stream check is bypassed", async () => {
     // given
     const promptCalls = { count: 0 }
     const deps = createDeps(promptCalls)
@@ -243,6 +236,6 @@ describe("createAutoRetryDispatcher reserved-session retry (#5109)", () => {
     await helpers.autoRetryWithFallback(sessionID, "anthropic/claude-opus-4-8", undefined, "session.status")
 
     // then
-    expect(promptCalls.count).toBe(0)
+    expect(promptCalls.count).toBe(1)
   })
 })

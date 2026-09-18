@@ -2,7 +2,10 @@ import type { HookDeps } from "./types"
 import { HOOK_NAME } from "./constants"
 import { log } from "../../shared/logger"
 import { SessionCategoryRegistry } from "../../shared/session-category-registry"
-import { clearDelegatedChildSessionBootstrap } from "../../shared/delegated-child-session-bootstrap"
+ import { clearDelegatedChildSessionBootstrap } from "../../shared/delegated-child-session-bootstrap"
+import type { RuntimeFallbackTimeout } from "./types"
+
+declare function clearTimeout(timeout: RuntimeFallbackTimeout): void
 
 const SESSION_TTL_MS = 30 * 60 * 1000
 
@@ -16,7 +19,9 @@ export function createStaleSessionCleanup(
     sessionRetryInFlight,
     sessionAwaitingFallbackResult,
     sessionStatusRetryKeys,
-    internallyAbortedSessions,
+     internallyAbortedSessions,
+    sessionSameModelRetryAttempts,
+    sessionSameModelRetryTimeouts,
   } = deps
 
   return () => {
@@ -32,7 +37,13 @@ export function createStaleSessionCleanup(
         clearSessionFallbackTimeout(sessionID)
         clearDelegatedChildSessionBootstrap(sessionID)
         SessionCategoryRegistry.remove(sessionID)
-        sessionStatusRetryKeys.delete(sessionID)
+         sessionStatusRetryKeys.delete(sessionID)
+        sessionSameModelRetryAttempts?.delete(sessionID)
+        const retryTimeout = sessionSameModelRetryTimeouts?.get(sessionID)
+         if (retryTimeout !== undefined) {
+           clearTimeout(retryTimeout)
+          sessionSameModelRetryTimeouts?.delete(sessionID)
+        }
         cleanedCount++
       }
     }

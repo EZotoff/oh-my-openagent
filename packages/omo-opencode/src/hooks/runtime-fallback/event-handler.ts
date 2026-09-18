@@ -65,6 +65,7 @@ export function createEventHandler(deps: HookDeps, helpers: AutoRetryHelpers) {
     deps.internallyAbortedSessions.delete(sessionID)
     sessionStatusRetryKeys.delete(sessionID)
     helpers.clearSessionFallbackTimeout(sessionID)
+    helpers.clearSameModelRetry?.(sessionID)
   }
 
   const handleSessionCreated = (props: Record<string, unknown> | undefined) => {
@@ -108,6 +109,7 @@ export function createEventHandler(deps: HookDeps, helpers: AutoRetryHelpers) {
       sessionAwaitingFallbackResult.delete(sessionID)
       deps.internallyAbortedSessions.delete(sessionID)
       helpers.clearSessionFallbackTimeout(sessionID)
+    helpers.clearSameModelRetry?.(sessionID)
       sessionStatusRetryKeys.delete(sessionID)
       SessionCategoryRegistry.remove(sessionID)
     }
@@ -152,7 +154,8 @@ export function createEventHandler(deps: HookDeps, helpers: AutoRetryHelpers) {
     }
 
     const hadTimeout = sessionFallbackTimeouts.has(sessionID)
-    helpers.clearSessionFallbackTimeout(sessionID)
+       helpers.clearSessionFallbackTimeout(sessionID)
+      helpers.clearSameModelRetry?.(sessionID)
     sessionRetryInFlight.delete(sessionID)
     sessionStatusRetryKeys.delete(sessionID)
 
@@ -202,10 +205,11 @@ export function createEventHandler(deps: HookDeps, helpers: AutoRetryHelpers) {
       return
     }
 
-    if (sessionAwaitingFallbackResult.has(sessionID)) {
-      const pendingFallbackModel = sessionStates.get(sessionID)?.pendingFallbackModel
-      const eventModel = resolveEventModel(props)
-      if (!pendingFallbackModel || eventModel !== pendingFallbackModel) {
+     if (sessionAwaitingFallbackResult.has(sessionID)) {
+       const pendingFallbackModel = sessionStates.get(sessionID)?.pendingFallbackModel
+       const eventModel = resolveEventModel(props)
+      const sameModelRetryActive = deps.sessionSameModelRetryAttempts?.has(sessionID) ?? false
+      if (!sameModelRetryActive && (!pendingFallbackModel || eventModel !== pendingFallbackModel)) {
         log(`[${HOOK_NAME}] session.error skipped - awaiting fallback result`, {
           sessionID,
           pendingFallbackModel,
@@ -235,6 +239,26 @@ export function createEventHandler(deps: HookDeps, helpers: AutoRetryHelpers) {
         errorName: extractErrorName(error),
         errorType: classifyErrorType(error),
       })
+       return
+     }
+
+    const errorType = classifyErrorType(error)
+    if (errorType !== "quota_exceeded") {
+      let state = sessionStates.get(sessionID)
+      if (!state) {
+        const initialModel = resolveFallbackBootstrapModel({
+          sessionID,
+          source: "session.error",
+          eventModel: resolveEventModel(props),
+          resolvedAgent,
+          pluginConfig,
+        })
+        if (!initialModel) return
+        state = createFallbackState(initialModel)
+        sessionStates.set(sessionID, state)
+      }
+      sessionLastAccess.set(sessionID, Date.now())
+      helpers.scheduleSameModelRetry?.(sessionID, state.currentModel, resolvedAgent)
       return
     }
 
@@ -266,6 +290,7 @@ export function createEventHandler(deps: HookDeps, helpers: AutoRetryHelpers) {
       sessionLastAccess.set(sessionID, Date.now())
     }
 
+    helpers.clearSameModelRetry?.(sessionID)
     await dispatchFallbackRetry(deps, helpers, {
       sessionID,
       state,

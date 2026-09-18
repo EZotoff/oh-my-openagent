@@ -107,7 +107,7 @@ describe("createSessionStatusHandler", () => {
     SessionCategoryRegistry.clear()
   })
 
-  it("#given a pending fallback model #when a new provider cooldown retry arrives #then the handler overrides the pending fallback and advances the chain", async () => {
+  it("#given a pending fallback model #when a non-quota provider cooldown retry arrives #then the handler does not advance the chain", async () => {
     // given
     SessionCategoryRegistry.clear()
     const sessionID = "session-status-pending-fallback"
@@ -138,16 +138,10 @@ describe("createSessionStatusHandler", () => {
     })
 
     // then
-    expect(abortCalls).toEqual([sessionID])
-    expect(retryCalls).toEqual([
-      {
-        sessionID,
-        model: "google/gemini-2.5-pro",
-        source: "session.status",
-      },
-    ])
-    expect(state.currentModel).toBe("google/gemini-2.5-pro")
-    expect(state.pendingFallbackModel).toBe("google/gemini-2.5-pro")
+    expect(abortCalls).toEqual([])
+    expect(retryCalls).toEqual([])
+    expect(state.currentModel).toBe("openai/gpt-5.4")
+    expect(state.pendingFallbackModel).toBe("openai/gpt-5.4")
     SessionCategoryRegistry.clear()
   })
 
@@ -184,7 +178,7 @@ describe("createSessionStatusHandler", () => {
     SessionCategoryRegistry.clear()
   })
 
-  it("#given retries_before_fallback = 2 #when the retry signal arrives for attempt 3 #then the handler aborts and dispatches the fallback chain", async () => {
+  it("#given a non-quota retryable status beyond the native retry budget #when the retry signal arrives #then the handler leaves the current model running", async () => {
     // given
     SessionCategoryRegistry.clear()
     const sessionID = "session-status-retry-budget-exceeded"
@@ -216,18 +210,12 @@ describe("createSessionStatusHandler", () => {
     })
 
     // then
-    expect(abortCalls).toEqual([sessionID])
-    expect(retryCalls).toEqual([
-      {
-        sessionID,
-        model: "openai/gpt-5.4",
-        source: "session.status",
-      },
-    ])
+    expect(abortCalls).toEqual([])
+    expect(retryCalls).toEqual([])
     SessionCategoryRegistry.clear()
   })
 
-  it("#given retries_before_fallback = 0 (legacy default) #when the first retry signal arrives #then the handler falls back immediately", async () => {
+  it("#given quota exhaustion and retries_before_fallback = 0 #when the first retry signal arrives #then the handler falls back immediately", async () => {
     // given
     SessionCategoryRegistry.clear()
     const sessionID = "session-status-retry-budget-zero"
@@ -243,18 +231,12 @@ describe("createSessionStatusHandler", () => {
     await handler({
       sessionID,
       model: "zai-coding-plan/glm-5.3",
-      status: { type: "retry", attempt: 1, message: "Provider is overloaded [retrying in 2s attempt #1]" },
+      status: { type: "retry", attempt: 1, message: "The usage limit has been reached [retrying in 2s attempt #1]" },
     })
 
     // then: legacy behavior — immediate failover on first signal
     expect(abortCalls).toEqual([sessionID])
-    expect(retryCalls).toEqual([
-      {
-        sessionID,
-        model: "openai/gpt-5.4",
-        source: "session.status",
-      },
-    ])
+    expect(retryCalls).toEqual([{ sessionID, model: "openai/gpt-5.4", source: "session.status" }])
     SessionCategoryRegistry.clear()
   })
 })

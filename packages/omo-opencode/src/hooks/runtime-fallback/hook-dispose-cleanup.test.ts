@@ -64,7 +64,7 @@ describe("createRuntimeFallbackHook dispose retry-key cleanup", () => {
           status: {
             type: "retry",
             attempt: 1,
-            message: "All credentials for model claude-opus-4-7 are cooling down [retrying in 7m 56s attempt #1]",
+            message: "Usage quota exceeded for this account [retrying in 7m 56s attempt #1]",
           },
         },
       },

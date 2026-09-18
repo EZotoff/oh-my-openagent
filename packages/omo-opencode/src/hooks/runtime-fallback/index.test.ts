@@ -22,7 +22,8 @@ import {
 } from "./test-timeout-clock.test-support"
 import type { RuntimeFallbackPluginInput } from "./types"
 
-type RuntimeFallbackModule = typeof import("./hook")
+ type RuntimeFallbackModule = typeof import("./hook")
+const QUOTA_ERROR = { statusCode: 429, message: "Usage quota exceeded for this account" } as const
 
 describe("runtime-fallback", () => {
   let logCalls: Array<{ msg: string; data?: unknown }>
@@ -154,7 +155,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429, message: "Rate limit exceeded" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -177,7 +178,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 503, message: "Service unavailable" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -266,8 +267,13 @@ describe("runtime-fallback", () => {
       expect(skipLog).toBeUndefined()
     })
 
-    test("should trigger fallback for missing API key errors when fallback models are configured", async () => {
-      const hook = createRuntimeFallbackHook(createMockPluginInput(), {
+    test("should retry the same model for missing API key errors", async () => {
+      const clock = installRuntimeFallbackTestClock()
+      const promptCalls: Array<Record<string, unknown>> = []
+      const hook = createRuntimeFallbackHook(createMockPluginInput({ session: {
+        messages: async () => ({ data: [{ info: { role: "user" }, parts: [{ type: "text", text: "continue" }] }] }),
+        promptAsync: async (args) => { promptCalls.push(args as Record<string, unknown>); return {} },
+      } }), {
         config: createMockConfig({ notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.4"]),
       })
@@ -293,11 +299,12 @@ describe("runtime-fallback", () => {
             },
           },
         },
-      })
-
-      const fallbackLog = logCalls.find((c) => c.msg.includes("Preparing fallback"))
-      expect(fallbackLog).toBeDefined()
-      expect(fallbackLog?.data).toMatchObject({ from: "google/gemini-2.5-pro", to: "openai/gpt-5.4" })
+       })
+      await clock.advanceBy(1_000)
+ 
+      const promptBody = promptCalls[0]?.body as { model?: { providerID?: string; modelID?: string } } | undefined
+      expect(promptBody?.model).toEqual({ providerID: "google", modelID: "gemini-2.5-pro" })
+      expect(logCalls.find((c) => c.msg.includes("Preparing fallback"))).toBeUndefined()
     })
 
     test("should detect retryable error from message pattern 'rate limit'", async () => {
@@ -352,7 +359,7 @@ describe("runtime-fallback", () => {
       expect(fallbackLog).toBeDefined()
     })
 
-    test("should continue fallback chain when fallback model is not found", async () => {
+     test("should continue fallback chain when fallback model quota is exhausted", async () => {
       const clock = installRuntimeFallbackTestClock()
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
@@ -376,14 +383,7 @@ describe("runtime-fallback", () => {
           type: "session.error",
           properties: {
             sessionID,
-            error: {
-              name: "ProviderAuthError",
-              data: {
-                providerID: "google",
-                message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
-              },
-            },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -397,7 +397,7 @@ describe("runtime-fallback", () => {
             // model at the top level so the awaiting-fallback gate recognises this
             // as an error from the fallback model we just dispatched
             model: "anthropic/claude-opus-4.7",
-            error: { name: "UnknownError", data: { message: "Model not found: anthropic/claude-opus-4.7." } },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -412,7 +412,7 @@ describe("runtime-fallback", () => {
       expect(nonRetryLog).toBeUndefined()
     })
 
-    test("should continue fallback chain when ProviderModelNotFoundError occurs", async () => {
+     test("should continue fallback chain when the next model also exhausts quota", async () => {
       const clock = installRuntimeFallbackTestClock()
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
@@ -436,11 +436,7 @@ describe("runtime-fallback", () => {
           type: "session.error",
           properties: {
             sessionID,
-            error: {
-              name: "AI_LoadAPIKeyError",
-              message:
-                "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
-            },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -454,14 +450,7 @@ describe("runtime-fallback", () => {
             // model at the top level so the awaiting-fallback gate recognises this
             // as an error from the fallback model we just dispatched
             model: "anthropic/claude-opus-4.7",
-            error: {
-              name: "ProviderModelNotFoundError",
-              data: {
-                providerID: "anthropic",
-                modelID: "claude-opus-4.7",
-                message: "Model not found: anthropic/claude-opus-4.7.",
-              },
-            },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -502,7 +491,7 @@ describe("runtime-fallback", () => {
           type: "session.error",
           properties: {
             sessionID,
-            error: { statusCode: 429, message: "Rate limit exceeded" },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -560,7 +549,7 @@ describe("runtime-fallback", () => {
           type: "session.error",
           properties: {
             sessionID,
-            error: { statusCode: 429, message: "Rate limit exceeded before history persisted" },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -624,7 +613,7 @@ describe("runtime-fallback", () => {
           type: "session.error",
           properties: {
             sessionID,
-            error: { statusCode: 429, message: "Rate limit after prompt persisted" },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -747,7 +736,7 @@ describe("runtime-fallback", () => {
             parts: [
               {
                 type: "text",
-                text: "This request would exceed your account's rate limit. Please try again later. [retrying in 2s attempt #2]",
+                text: "Usage quota exceeded for this account [retrying in 2s attempt #2]",
               },
             ],
           },
@@ -789,7 +778,7 @@ describe("runtime-fallback", () => {
               parts: [
                 {
                   type: "text",
-                  text: "This request would exceed your account's rate limit. Please try again later. [retrying in 2s attempt #2]",
+                  text: "Usage quota exceeded for this account [retrying in 2s attempt #2]",
                 },
               ],
             },
@@ -849,7 +838,7 @@ describe("runtime-fallback", () => {
               type: "retry",
               next: 476,
               attempt: 1,
-              message: "All credentials for model claude-opus-4-7 are cooling down [retrying in 7m 56s attempt #1]",
+              message: "Usage quota exceeded for this account [retrying in 7m 56s attempt #1]",
             },
           },
         },
@@ -908,7 +897,7 @@ describe("runtime-fallback", () => {
               type: "retry",
               next: 476,
               attempt: 1,
-              message: "All credentials for model claude-opus-4-7 are cooling down [retrying in 7m 56s attempt #1]",
+              message: "Usage quota exceeded for this account [retrying in 7m 56s attempt #1]",
             },
           },
         },
@@ -923,7 +912,7 @@ describe("runtime-fallback", () => {
               type: "retry",
               next: 475,
               attempt: 1,
-              message: "All credentials for model claude-opus-4-7 are cooling down [retrying in 7m 55s attempt #1]",
+              message: "Usage quota exceeded for this account [retrying in 7m 55s attempt #1]",
             },
           },
         },
@@ -994,7 +983,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429, message: "Rate limit" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -1013,7 +1002,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429 } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -1072,7 +1061,7 @@ describe("runtime-fallback", () => {
           type: "session.error",
           properties: {
             sessionID,
-            error: { statusCode: 429 },
+            error: QUOTA_ERROR,
             model: "anthropic/claude-opus-4-5",
           },
         },
@@ -1100,7 +1089,7 @@ describe("runtime-fallback", () => {
           type: "session.error",
           properties: {
             sessionID,
-            error: { statusCode: 429, message: "Rate limit" },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -1173,7 +1162,7 @@ describe("runtime-fallback", () => {
             info: {
               sessionID,
               role: "assistant",
-              error: { statusCode: 429, message: "Rate limit" },
+              error: QUOTA_ERROR,
               model: "anthropic/claude-opus-4-5",
             },
           },
@@ -1195,7 +1184,7 @@ describe("runtime-fallback", () => {
             info: {
               sessionID,
               role: "user",
-              error: { statusCode: 429 },
+              error: QUOTA_ERROR,
               model: "anthropic/claude-opus-4-5",
             },
           },
@@ -1206,8 +1195,13 @@ describe("runtime-fallback", () => {
       expect(errorLog).toBeUndefined()
     })
 
-    test("should trigger fallback when message.updated has missing API key error without model", async () => {
-      const hook = createRuntimeFallbackHook(createMockPluginInput(), {
+    test("should retry the same model when message.updated has missing API key error without model", async () => {
+      const clock = installRuntimeFallbackTestClock()
+      const promptCalls: Array<Record<string, unknown>> = []
+      const hook = createRuntimeFallbackHook(createMockPluginInput({ session: {
+        messages: async () => ({ data: [{ info: { role: "user" }, parts: [{ type: "text", text: "continue" }] }] }),
+        promptAsync: async (args) => { promptCalls.push(args as Record<string, unknown>); return {} },
+      } }), {
         config: createMockConfig({ notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.4"]),
       })
@@ -1236,11 +1230,12 @@ describe("runtime-fallback", () => {
             },
           },
         },
-      })
-
-      const fallbackLog = logCalls.find((c) => c.msg.includes("Preparing fallback"))
-      expect(fallbackLog).toBeDefined()
-      expect(fallbackLog?.data).toMatchObject({ from: "google/gemini-2.5-pro", to: "openai/gpt-5.4" })
+       })
+      await clock.advanceBy(1_000)
+ 
+      const promptBody = promptCalls[0]?.body as { model?: { providerID?: string; modelID?: string } } | undefined
+      expect(promptBody?.model).toEqual({ providerID: "google", modelID: "gemini-2.5-pro" })
+      expect(logCalls.find((c) => c.msg.includes("Preparing fallback"))).toBeUndefined()
     })
 
     test("should bootstrap message.updated fallback from session category model and preserve variant", async () => {
@@ -1276,7 +1271,7 @@ describe("runtime-fallback", () => {
             info: {
               sessionID,
               role: "assistant",
-              error: { statusCode: 429, message: "Rate limit exceeded" },
+              error: QUOTA_ERROR,
             },
           },
         },
@@ -1300,7 +1295,7 @@ describe("runtime-fallback", () => {
       })
     })
 
-    test("should not advance fallback state from message.updated while retry is already in flight", async () => {
+     test("should not advance fallback state from message.updated while retry is already in flight", async () => {
       const pending = new Promise<never>(() => {})
 
       const hook = createRuntimeFallbackHook(
@@ -1337,14 +1332,7 @@ describe("runtime-fallback", () => {
           type: "session.error",
           properties: {
             sessionID,
-            error: {
-              name: "ProviderAuthError",
-              data: {
-                providerID: "google",
-                message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
-              },
-            },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -1358,14 +1346,7 @@ describe("runtime-fallback", () => {
             info: {
               sessionID,
               role: "assistant",
-              error: {
-                name: "ProviderAuthError",
-                data: {
-                  providerID: "google",
-                  message:
-                    "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
-                },
-              },
+              error: QUOTA_ERROR,
               model: "github-copilot/claude-opus-4.7",
             },
           },
@@ -1378,7 +1359,7 @@ describe("runtime-fallback", () => {
       void sessionErrorPromise
     })
 
-    test("#given promptAsync fails after fallback retry may have been accepted #when the gate hold expires and the same error repeats #then the pending fallback state prevents a duplicate retry prompt", async () => {
+     test("#given promptAsync fails after fallback retry may have been accepted #when the gate hold expires and the same error repeats #then the pending fallback state prevents a duplicate retry prompt", async () => {
       // given
       let promptCalls = 0
       const hook = createRuntimeFallbackHook(
@@ -1418,7 +1399,7 @@ describe("runtime-fallback", () => {
           properties: {
             sessionID,
             model: "google/gemini-2.5-pro",
-            error: { statusCode: 429, message: "Rate limit" },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -1431,7 +1412,7 @@ describe("runtime-fallback", () => {
           properties: {
             sessionID,
             model: "google/gemini-2.5-pro",
-            error: { statusCode: 429, message: "Rate limit" },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -1443,7 +1424,7 @@ describe("runtime-fallback", () => {
       expect(skipLog).toBeDefined()
     })
 
-    test("should force advance fallback from message.updated when Copilot auto-retry signal appears during in-flight retry", async () => {
+     test("should force advance fallback from message.updated when Copilot auto-retry signal appears during in-flight retry", async () => {
       const retriedModels: string[] = []
       const pending = new Promise<never>(() => {})
 
@@ -1497,7 +1478,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -1531,7 +1512,7 @@ describe("runtime-fallback", () => {
       void sessionErrorPromise
     })
 
-    test("should advance fallback after session timeout when Copilot retry emits no retryable events", async () => {
+     test("should advance fallback after session timeout when Copilot retry emits no retryable events", async () => {
       const clock = installRuntimeFallbackTestClock()
       const retriedModels: string[] = []
       const abortCalls: Array<{ path?: { id?: string } }> = []
@@ -1586,7 +1567,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -1606,7 +1587,7 @@ describe("runtime-fallback", () => {
       expect(timeoutLog).toBeDefined()
     })
 
-    test("should keep session timeout active after chat.message model override", async () => {
+     test("should keep session timeout active after chat.message model override", async () => {
       const clock = installRuntimeFallbackTestClock()
       const retriedModels: string[] = []
 
@@ -1656,7 +1637,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -1681,7 +1662,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toContain("openai/gpt-5.4")
     })
 
-    test("should abort in-flight fallback request before advancing on timeout", async () => {
+     test("should abort in-flight fallback request before advancing on timeout", async () => {
       const clock = installRuntimeFallbackTestClock()
       const retriedModels: string[] = []
       const abortCalls: Array<{ path?: { id?: string } }> = []
@@ -1742,7 +1723,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -1761,7 +1742,7 @@ describe("runtime-fallback", () => {
       void sessionErrorPromise
     })
 
-    test("should not advance fallback after session.stop cancels timeout-driven retry", async () => {
+     test("should not advance fallback after session.stop cancels timeout-driven retry", async () => {
       const clock = installRuntimeFallbackTestClock()
       const retriedModels: string[] = []
 
@@ -1811,7 +1792,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -1832,7 +1813,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toHaveLength(1)
     })
 
-    test("should not advance fallback timeout after completed subagent clears eligibility", async () => {
+     test("should not advance fallback timeout after completed subagent clears eligibility", async () => {
       const clock = installRuntimeFallbackTestClock()
       const retriedModels: string[] = []
       const abortCalls: Array<{ path?: { id?: string } }> = []
@@ -1888,7 +1869,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -1906,7 +1887,7 @@ describe("runtime-fallback", () => {
       expect(skipLog).toBeDefined()
     })
 
-    test("should not trigger second fallback after successful assistant reply", async () => {
+     test("should not trigger second fallback after successful assistant reply", async () => {
       const clock = installRuntimeFallbackTestClock()
       const retriedModels: string[] = []
       const mockMessages = [
@@ -1959,7 +1940,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -2005,7 +1986,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toEqual(["github-copilot/claude-opus-4.7"])
     })
 
-    test("should not clear fallback timeout on assistant non-error update with Copilot retry signal", async () => {
+     test("should not clear fallback timeout on assistant non-error update with Copilot retry signal", async () => {
       const clock = installRuntimeFallbackTestClock()
       const retriedModels: string[] = []
 
@@ -2055,7 +2036,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -2082,7 +2063,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toContain("openai/gpt-5.5")
     })
 
-    test("should not clear fallback timeout on assistant non-error update with OpenAI retry signal", async () => {
+     test("should not clear fallback timeout on assistant non-error update with OpenAI retry signal", async () => {
       const clock = installRuntimeFallbackTestClock()
       const retriedModels: string[] = []
 
@@ -2131,7 +2112,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -2158,7 +2139,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toContain("anthropic/claude-opus-4-7")
     })
 
-    test("should not clear fallback timeout on assistant non-error update without user-visible content", async () => {
+     test("should not clear fallback timeout on assistant non-error update without user-visible content", async () => {
       const clock = installRuntimeFallbackTestClock()
       const retriedModels: string[] = []
 
@@ -2208,7 +2189,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -2235,7 +2216,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toContain("openai/gpt-5.5")
     })
 
-    test("should not clear fallback timeout from info.message alone without persisted assistant text", async () => {
+     test("should not clear fallback timeout from info.message alone without persisted assistant text", async () => {
       const clock = installRuntimeFallbackTestClock()
       const retriedModels: string[] = []
 
@@ -2285,7 +2266,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -2312,7 +2293,7 @@ describe("runtime-fallback", () => {
       expect(retriedModels).toContain("openai/gpt-5.5")
     })
 
-    test("should keep timeout armed when session.idle fires before fallback result", async () => {
+     test("should keep timeout armed when session.idle fires before fallback result", async () => {
       const clock = installRuntimeFallbackTestClock()
       const retriedModels: string[] = []
 
@@ -2362,7 +2343,7 @@ describe("runtime-fallback", () => {
               data: {
                 providerID: "google",
                 message:
-                  "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable.",
+                  "Usage quota exceeded for this account",
               },
             },
           },
@@ -2480,7 +2461,7 @@ describe("runtime-fallback", () => {
             },
             parts: [
               { type: "text", text: "Hello" },
-              { type: "error", text: "Rate limit exceeded" },
+              { type: "error", text: "Usage quota exceeded for this account" },
             ],
           },
         },
@@ -2551,7 +2532,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { error: { statusCode: 429 } },
+          properties: { error: QUOTA_ERROR },
         },
       })
 
@@ -2605,7 +2586,7 @@ describe("runtime-fallback", () => {
   })
 
   describe("model switching via chat.message", () => {
-    test("should apply fallback model on next chat.message after error", async () => {
+     test("should apply fallback model on next chat.message after error", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.4", "google/gemini-3.1-pro"]),
@@ -2625,7 +2606,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429, message: "Rate limit" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -2669,7 +2650,7 @@ describe("runtime-fallback", () => {
       expect(output.message.model).toEqual({ providerID: "anthropic", modelID: "claude-opus-4-5" })
     })
 
-    test("should notify when fallback occurs", async () => {
+     test("should notify when fallback occurs", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: true }),
         pluginConfig: createMockPluginConfigWithCategoryFallback(["openai/gpt-5.4"]),
@@ -2687,7 +2668,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429 } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -2712,7 +2693,7 @@ describe("runtime-fallback", () => {
       }
     }
 
-    test("should use agent-level fallback_models", async () => {
+     test("should use agent-level fallback_models", async () => {
       const input = createMockPluginInput()
       const hook = createRuntimeFallbackHook(input, {
         config: createMockConfig({ notify_on_fallback: false }),
@@ -2732,7 +2713,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 503 }, agent: "oracle" },
+          properties: { sessionID, error: QUOTA_ERROR, agent: "oracle" },
         },
       })
 
@@ -2742,7 +2723,7 @@ describe("runtime-fallback", () => {
       expect(fallbackLog?.data).toMatchObject({ from: "anthropic/claude-opus-4-5", to: "openai/gpt-5.4" })
     })
 
-    test("should detect agent from sessionID pattern", async () => {
+     test("should detect agent from sessionID pattern", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithAgentFallback("sisyphus", ["openai/gpt-5.4"]),
@@ -2759,7 +2740,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429 } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -2769,7 +2750,7 @@ describe("runtime-fallback", () => {
       expect(fallbackLog?.data).toMatchObject({ to: "openai/gpt-5.4" })
     })
 
-    test("should preserve resolved agent during auto-retry", async () => {
+     test("should preserve resolved agent during auto-retry", async () => {
       const promptCalls: Array<Record<string, unknown>> = []
       const hook = createRuntimeFallbackHook(
         createMockPluginInput({
@@ -2804,7 +2785,7 @@ describe("runtime-fallback", () => {
           properties: {
             sessionID,
             model: "anthropic/claude-opus-4-7",
-            error: { statusCode: 503, message: "Service unavailable" },
+            error: QUOTA_ERROR,
             agent: "prometheus",
           },
         },
@@ -2812,11 +2793,11 @@ describe("runtime-fallback", () => {
 
       expect(promptCalls.length).toBe(1)
       const callBody = promptCalls[0]?.body as Record<string, unknown>
-      expect(callBody?.agent).toBe("prometheus")
+      expect(callBody?.agent).toBe("Prometheus")
       expect(callBody?.model).toEqual({ providerID: "openai", modelID: "gpt-5.4" })
     })
 
-    test("should not dispatch a second fallback prompt while the accepted retry session is still active", async () => {
+     test("should not dispatch a second fallback prompt while the accepted retry session is still active", async () => {
       const sessionID = "test-runtime-fallback-active-gate"
       let sessionStatus = "idle"
       const promptCalls: Array<Record<string, unknown>> = []
@@ -2859,7 +2840,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 503, message: "Service unavailable" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
       await hook.event({
@@ -2868,7 +2849,7 @@ describe("runtime-fallback", () => {
           properties: {
             sessionID,
             model: "github-copilot/claude-opus-4.7",
-            error: { statusCode: 503, message: "Service unavailable" },
+            error: QUOTA_ERROR,
           },
         },
       })
@@ -2878,7 +2859,7 @@ describe("runtime-fallback", () => {
   })
 
   describe("cooldown mechanism", () => {
-    test("should respect cooldown period before retrying failed model", async () => {
+     test("should respect cooldown period before retrying failed model", async () => {
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
         config: createMockConfig({ cooldown_seconds: 60, notify_on_fallback: false }),
         pluginConfig: createMockPluginConfigWithCategoryFallback([
@@ -2900,7 +2881,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429 } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -2912,7 +2893,7 @@ describe("runtime-fallback", () => {
         event: {
           type: "session.error",
           // model matches pendingFallbackModel so the awaiting-fallback gate lets this through
-          properties: { sessionID, model: "openai/gpt-5.4", error: { statusCode: 429 } },
+          properties: { sessionID, model: "openai/gpt-5.4", error: QUOTA_ERROR },
         },
       })
 
@@ -2940,7 +2921,7 @@ describe("runtime-fallback", () => {
         await hook.event({
           event: {
             type: "session.error",
-            properties: { sessionID, error: { statusCode: 429 } },
+            properties: { sessionID, error: QUOTA_ERROR },
           },
         })
       }
@@ -2952,7 +2933,7 @@ describe("runtime-fallback", () => {
   })
 
   describe("race condition guards", () => {
-    test("session.error is skipped while retry request is in flight", async () => {
+     test("session.error is skipped while retry request is in flight", async () => {
       const never = new Promise<never>(() => {})
 
       //#given
@@ -2995,7 +2976,7 @@ describe("runtime-fallback", () => {
       const firstErrorPromise = hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429, message: "Rate limit" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -3005,7 +2986,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429, message: "Second rate limit" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -3020,7 +3001,7 @@ describe("runtime-fallback", () => {
       void firstErrorPromise
     })
 
-    test("consecutive session.errors advance chain normally when retry completes between them", async () => {
+     test("consecutive session.errors advance chain normally when retry completes between them", async () => {
       const clock = installRuntimeFallbackTestClock()
       //#given
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
@@ -3052,14 +3033,14 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429, message: "Rate limit" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
       const secondErrorPromise = hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, model: "provider-a/model-a", error: { statusCode: 429, message: "Rate limit again" } },
+          properties: { sessionID, model: "provider-a/model-a", error: QUOTA_ERROR },
         },
       })
       await clock.advanceBy(3_000)
@@ -3070,7 +3051,7 @@ describe("runtime-fallback", () => {
       expect(fallbackLogs.length).toBeGreaterThanOrEqual(2)
     })
 
-    test("session.error is skipped while waiting for the dispatched fallback result", async () => {
+     test("session.error is skipped while waiting for the dispatched fallback result", async () => {
       const promptCalls: Array<unknown> = []
 
       //#given
@@ -3115,7 +3096,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429, message: "Rate limit" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -3123,7 +3104,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429, message: "Rate limit" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -3135,7 +3116,7 @@ describe("runtime-fallback", () => {
       expect(skipLog).toBeDefined()
     })
 
-    test("#given a dispatched fallback retry #when stale original assistant error arrives before duplicate session.error #then only one assistant retry prompt is sent", async () => {
+     test("#given a dispatched fallback retry #when stale original assistant error arrives before duplicate session.error #then only one assistant retry prompt is sent", async () => {
       const promptCalls: Array<unknown> = []
 
       const hook = createRuntimeFallbackHook(
@@ -3179,7 +3160,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, model: "google/gemini-2.5-pro", error: { statusCode: 429, message: "Rate limit" } },
+          properties: { sessionID, model: "google/gemini-2.5-pro", error: QUOTA_ERROR },
         },
       })
       await hook.event({
@@ -3190,7 +3171,7 @@ describe("runtime-fallback", () => {
               sessionID,
               role: "assistant",
               model: "google/gemini-2.5-pro",
-              error: { statusCode: 429, message: "Rate limit" },
+              error: QUOTA_ERROR,
             },
           },
         },
@@ -3198,7 +3179,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, model: "google/gemini-2.5-pro", error: { statusCode: 429, message: "Rate limit" } },
+          properties: { sessionID, model: "google/gemini-2.5-pro", error: QUOTA_ERROR },
         },
       })
 
@@ -3209,7 +3190,7 @@ describe("runtime-fallback", () => {
       expect(skipLog).toBeDefined()
     })
 
-    test("session.stop aborts when sessionAwaitingFallbackResult is set", async () => {
+     test("session.stop aborts when sessionAwaitingFallbackResult is set", async () => {
       const abortCalls: Array<{ path?: { id?: string } }> = []
 
       //#given
@@ -3255,7 +3236,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429, message: "Rate limit" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -3271,7 +3252,7 @@ describe("runtime-fallback", () => {
       expect(abortCalls.some((call) => call.path?.id === sessionID)).toBe(true)
     })
 
-    test("pendingFallbackModel advances chain on subsequent error even when persisted", async () => {
+     test("pendingFallbackModel advances chain on subsequent error even when persisted", async () => {
       const clock = installRuntimeFallbackTestClock()
       //#given
       const hook = createRuntimeFallbackHook(createMockPluginInput(), {
@@ -3302,7 +3283,7 @@ describe("runtime-fallback", () => {
       await hook.event({
         event: {
           type: "session.error",
-          properties: { sessionID, error: { statusCode: 429, message: "Rate limit" } },
+          properties: { sessionID, error: QUOTA_ERROR },
         },
       })
 
@@ -3320,7 +3301,7 @@ describe("runtime-fallback", () => {
         event: {
           type: "session.error",
           // model matches pendingFallbackModel so the awaiting-fallback gate lets this through
-          properties: { sessionID, model: "provider-a/model-a", error: { statusCode: 429, message: "Rate limit again" } },
+          properties: { sessionID, model: "provider-a/model-a", error: QUOTA_ERROR },
         },
       })
       await clock.advanceBy(3_000)

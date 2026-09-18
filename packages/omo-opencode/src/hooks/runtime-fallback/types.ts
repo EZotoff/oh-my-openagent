@@ -87,7 +87,9 @@ export interface HookDeps {
   sessionRetryInFlight: Set<string>
   sessionAwaitingFallbackResult: Set<string>
   sessionFallbackTimeouts: Map<string, RuntimeFallbackTimeout>
-  sessionStatusRetryKeys: Map<string, string>
+   sessionStatusRetryKeys: Map<string, string>
+  sessionSameModelRetryAttempts?: Map<string, number>
+  sessionSameModelRetryTimeouts?: Map<string, RuntimeFallbackTimeout>
   /**
    * Sessions whose in-flight request was aborted by us (to swap in a fallback
    * model), as opposed to a user-initiated stop. Consumed by
@@ -95,5 +97,5 @@ export interface HookDeps {
    * reset attemptCount — that reset is what was driving the infinite retry
    * loop (every cycle started over at attempt:1). See issue #4006.
    */
-  internallyAbortedSessions: Set<string>
+   internallyAbortedSessions: Set<string>
 }

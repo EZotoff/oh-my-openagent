@@ -56,7 +56,9 @@ export function createRuntimeFallbackHook(
     sessionRetryInFlight: new Set(),
     sessionAwaitingFallbackResult: new Set(),
     sessionFallbackTimeouts: new Map(),
-    sessionStatusRetryKeys: new Map(),
+     sessionStatusRetryKeys: new Map(),
+    sessionSameModelRetryAttempts: new Map(),
+    sessionSameModelRetryTimeouts: new Map(),
     internallyAbortedSessions: new Set(),
   }
 
@@ -101,8 +103,11 @@ export function createRuntimeFallbackHook(
       clearInterval(cleanupInterval)
     }
 
-    for (const fallbackTimeout of deps.sessionFallbackTimeouts.values()) {
-      clearTimeout(fallbackTimeout)
+     for (const fallbackTimeout of deps.sessionFallbackTimeouts.values()) {
+       clearTimeout(fallbackTimeout)
+     }
+    for (const retryTimeout of deps.sessionSameModelRetryTimeouts?.values() ?? []) {
+      clearTimeout(retryTimeout)
     }
 
     firstPromptWatchdog.dispose()
@@ -112,7 +117,9 @@ export function createRuntimeFallbackHook(
     deps.sessionRetryInFlight.clear()
     deps.sessionAwaitingFallbackResult.clear()
     deps.sessionFallbackTimeouts.clear()
-    deps.sessionStatusRetryKeys.clear()
+     deps.sessionStatusRetryKeys.clear()
+    deps.sessionSameModelRetryAttempts?.clear()
+    deps.sessionSameModelRetryTimeouts?.clear()
     deps.internallyAbortedSessions.clear()
   }
 

@@ -43,6 +43,7 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
     const model = normalizeModelToCanonicalString(info?.model)
 
     if (sessionID && role === "assistant" && !error) {
+      helpers.clearSameModelRetry?.(sessionID)
       if (!sessionAwaitingFallbackResult.has(sessionID)) {
         return
       }
@@ -59,7 +60,7 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
       sessionAwaitingFallbackResult.delete(sessionID)
       sessionStatusRetryKeys.delete(sessionID)
       helpers.clearSessionFallbackTimeout(sessionID)
-      let state = sessionStates.get(sessionID)
+      const state = sessionStates.get(sessionID)
       if (state?.pendingFallbackModel) {
         state.pendingFallbackModel = undefined
         state.pendingFallbackPromptMayHaveBeenAccepted = false
@@ -70,6 +71,7 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
 
     if (sessionID && role === "assistant" && error) {
       let state = sessionStates.get(sessionID)
+      const errorType = classifyErrorType(error)
       const pendingFallbackModel = state?.pendingFallbackModel
       const wasAwaitingFallbackResult = sessionAwaitingFallbackResult.has(sessionID)
       if (
@@ -93,7 +95,12 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
         return
       }
 
-      if (retrySignal && timeoutEnabled && (sessionRetryInFlight.has(sessionID) || wasAwaitingFallbackResult)) {
+      if (
+        errorType === "quota_exceeded" &&
+        retrySignal &&
+        timeoutEnabled &&
+        (sessionRetryInFlight.has(sessionID) || wasAwaitingFallbackResult)
+      ) {
         log(`[${HOOK_NAME}] Overriding active retry due to provider auto-retry signal`, {
           sessionID,
           model,
@@ -108,6 +115,7 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
 
       if (!retrySignal) {
         helpers.clearSessionFallbackTimeout(sessionID)
+      helpers.clearSameModelRetry?.(sessionID)
       }
 
       log(`[${HOOK_NAME}] message.updated with assistant error`, {
@@ -130,6 +138,23 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
 
       const agent = info?.agent as string | undefined
       const resolvedAgent = await helpers.resolveAgentForSessionFromContext(sessionID, agent)
+      if (errorType !== "quota_exceeded") {
+        if (!state) {
+          const initialModel = resolveFallbackBootstrapModel({
+            sessionID,
+            source: "message.updated",
+            eventModel: model,
+            resolvedAgent,
+            pluginConfig,
+          })
+          if (!initialModel) return
+          state = createFallbackState(initialModel)
+          sessionStates.set(sessionID, state)
+        }
+        sessionLastAccess.set(sessionID, Date.now())
+        helpers.scheduleSameModelRetry?.(sessionID, state.currentModel, resolvedAgent)
+        return
+      }
       const fallbackModels = getFallbackModelsForSession(sessionID, resolvedAgent, pluginConfig)
 
       if (fallbackModels.length === 0) {
@@ -188,11 +213,10 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
         }
       }
 
-      if (classifyErrorType(error) === "quota_exceeded") {
-        await helpers.abortSessionRequest(sessionID, "message.updated.quota-fallback")
-        sessionRetryInFlight.delete(sessionID)
-      }
+      await helpers.abortSessionRequest(sessionID, "message.updated.quota-fallback")
+      sessionRetryInFlight.delete(sessionID)
 
+    helpers.clearSameModelRetry?.(sessionID)
       await dispatchFallbackRetry(deps, helpers, {
         sessionID,
         state,

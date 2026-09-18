@@ -2,7 +2,7 @@ import type { HookDeps } from "./types"
 import type { AutoRetryHelpers } from "./auto-retry"
 import { HOOK_NAME, RETRYABLE_ERROR_PATTERNS } from "./constants"
 import { log } from "../../shared/logger"
-import { extractAutoRetrySignal } from "./error-classifier"
+import { classifyErrorType, extractAutoRetrySignal } from "./error-classifier"
 import { createFallbackState } from "./fallback-state"
 import { getFallbackModelsForSession } from "./fallback-models"
 import { normalizeRetryStatusMessage, extractRetryAttempt } from "../../shared/retry-status-utils"
@@ -34,7 +34,7 @@ export function createSessionStatusHandler(
 
     const retryMessage = typeof status.message === "string" ? status.message : ""
     const retrySignal = extractAutoRetrySignal({ status: retryMessage, message: retryMessage })
-    if (!retrySignal) {
+     if (!retrySignal) {
       // Fallback: status.type is already "retry", so check the message against
       // retryable error patterns directly. This handles providers like Gemini whose
       // retry status message may not contain "retrying in" text alongside the error.
@@ -51,7 +51,11 @@ export function createSessionStatusHandler(
           })
         }
         return
-      }
+       }
+     }
+
+    if (classifyErrorType({ message: retryMessage }) !== "quota_exceeded") {
+      return
     }
 
     const retryKey = `${extractRetryAttempt(status.attempt, retryMessage)}:${normalizeRetryStatusMessage(retryMessage)}`
@@ -154,6 +158,7 @@ export function createSessionStatusHandler(
 
     await helpers.abortSessionRequest(sessionID, "session.status.retry-signal")
 
+    helpers.clearSameModelRetry?.(sessionID)
     await dispatchFallbackRetry(deps, helpers, {
       sessionID,
       state,

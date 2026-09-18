@@ -152,12 +152,12 @@ function createRuntimeFallbackHelpers(deps: HookDeps, operations: string[]): Aut
   }
 }
 
-describe("createMessageUpdateHandler runtime fallback dispatch", () => {
+ describe("createMessageUpdateHandler runtime fallback dispatch", () => {
   afterEach(() => {
     SessionCategoryRegistry.clear()
   })
 
-  it("#given quota-exceeded assistant error with a fallback #when message update is handled #then primary request is aborted before fallback dispatch and toast", async () => {
+   it("#given quota-exceeded assistant error with a fallback #when message update is handled #then primary request is aborted before fallback dispatch and toast", async () => {
     // given
     const sessionID = "session-quota-fallback"
     const operations: string[] = []
@@ -185,5 +185,28 @@ describe("createMessageUpdateHandler runtime fallback dispatch", () => {
       "toast",
     ])
     expect(deps.internallyAbortedSessions.has(sessionID)).toBe(true)
+   })
+
+  it("#given a successful assistant response after same-model retry #when message update is handled #then same-model backoff is cleared", async () => {
+    // given
+    const sessionID = "session-same-model-success"
+    const operations: string[] = []
+    const deps = createRuntimeFallbackDeps(operations)
+    deps.ctx = createContext({
+      data: [
+        { info: { role: "user" }, parts: [{ type: "text", text: "question" }] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "answer" }] },
+      ],
+    })
+    deps.sessionAwaitingFallbackResult.add(sessionID)
+    const helpers = createRuntimeFallbackHelpers(deps, operations)
+    helpers.clearSameModelRetry = (id: string) => operations.push(`clear-same-model:${id}`)
+    const handler = createMessageUpdateHandler(deps, helpers)
+
+    // when
+    await handler({ sessionID, info: { role: "assistant", model: "openai/gpt-5.4" } })
+
+    // then
+    expect(operations).toEqual([`clear-same-model:${sessionID}`])
   })
-})
+ })
