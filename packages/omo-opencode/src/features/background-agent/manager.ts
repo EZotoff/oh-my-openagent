@@ -1571,6 +1571,7 @@ The fallback retry session is now created and can be inspected directly.
 
   private clearDispatchedParentWake(sessionID: string): void {
     this.clearParentWakeTextDeltaBuffers(sessionID)
+    this.parentWakeNotifier.consumeDispatchedParentWakeOutput(sessionID)
     this.parentWakeNotifier.clearDispatchedParentWake(sessionID)
   }
 

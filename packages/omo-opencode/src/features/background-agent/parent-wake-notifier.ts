@@ -138,6 +138,14 @@ export class ParentWakeNotifier {
     this.dispatchedTracker.clearWake(sessionID)
   }
 
+  // Fast path for the live output handler: the manager already observed real
+  // assistant/tool output for a dispatched wake, so consume its journal entry
+  // without another session-messages round trip. No-op once the tracker is clear.
+  consumeDispatchedParentWakeOutput(sessionID: string): void {
+    const wake = this.dispatchedTracker.getWake(sessionID)
+    if (wake?.wakeID) this.wakeJournal.consume(wake.wakeID, "assistant or tool output observed")
+  }
+
   async observeParentSessionOutput(sessionID: string): Promise<void> {
     const messages = await this.sessionInspector.getMessages(sessionID)
     if (messages) this.wakeJournal.observeMessages(sessionID, messages)
@@ -232,15 +240,36 @@ export class ParentWakeNotifier {
   private async runWatchdog(): Promise<void> {
     const now = Date.now()
     for (const entry of this.wakeJournal.list()) {
+      if (entry.state === "dispatching") {
+        const claimAge = entry.claimedAt === null ? CLAIM_TTL_MS : now - entry.claimedAt
+        if (claimAge < CLAIM_TTL_MS) continue
+        await this.recoverStaleWake(entry, "watchdog found stale dispatching wake")
+        continue
+      }
       if (entry.state !== "dispatched-awaiting-output") continue
       const dispatchedAt = entry.dispatchedAt ?? now
       if (now - dispatchedAt < WAKE_WATCHDOG_INTERVAL_MS) continue
-      const messages = await this.sessionInspector.getMessages(entry.sessionID)
-      if (!messages || this.wakeJournal.recoveryStatus(entry, messages) !== "replay-eligible") continue
-      const outcome = this.wakeJournal.failOrRequeue(entry.wakeID, "watchdog found accepted wake without output")
-      if (outcome === "dead-letter") this.reportDeadLetter(entry.wakeID, "watchdog retry budget exhausted")
-      if (outcome === "queued") this.enqueueJournalWake(entry)
+      await this.recoverStaleWake(entry, "watchdog found accepted wake without output")
     }
+  }
+
+  // A wake whose output already landed must be consumed, not replayed. A stale
+  // `dispatching` claim (crash between claim and prompt accept) has no persisted
+  // wake message, so identity-absent is replay-safe there; for an accepted wake
+  // only an empty unknown-finish assistant (exact identity) authorizes a retry.
+  private async recoverStaleWake(entry: WakeEntry, reason: string): Promise<void> {
+    const messages = await this.sessionInspector.getMessages(entry.sessionID)
+    if (!messages) return
+    const status = this.wakeJournal.recoveryStatus(entry, messages)
+    if (status === "output-observed") {
+      this.wakeJournal.consume(entry.wakeID, "assistant or tool output observed during watchdog sweep")
+      return
+    }
+    if (status === "identity-ambiguous") return
+    if (status === "identity-absent" && entry.state === "dispatched-awaiting-output") return
+    const outcome = this.wakeJournal.failOrRequeue(entry.wakeID, reason)
+    if (outcome === "dead-letter") this.reportDeadLetter(entry.wakeID, "watchdog retry budget exhausted")
+    if (outcome === "queued") this.enqueueJournalWake(entry)
   }
 
   private enqueueJournalWake(entry: WakeEntry): void {
