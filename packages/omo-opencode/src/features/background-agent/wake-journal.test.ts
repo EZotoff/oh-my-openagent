@@ -62,6 +62,45 @@ describe("WakeJournal", () => {
     expect(journal.read(entry.wakeID)?.userMessageID).toBe("user-1")
   })
 
+  test("accepted wake crash window is replayable only for an empty unknown-finish assistant", () => {
+    // given
+    const journal = createJournal(() => 2_500)
+    const entry = journal.queue({ sessionID: "ses-crash", notificationText: "accepted", promptContext: {}, shouldReply: true })
+    journal.claim(entry.wakeID)
+    const acceptedUser = {
+      info: { id: "user-crash", role: "user" },
+      parts: [{ type: "text", text: entry.injectedText, synthetic: true }],
+    }
+
+    // when
+    const status = journal.recoveryStatus(entry, [acceptedUser, {
+      info: { id: "assistant-empty", parentID: "user-crash", role: "assistant", finish: "unknown", tokens: { input: 0, output: 0, reasoning: 0 } },
+      parts: [],
+    }])
+
+    // then
+    expect(status).toBe("replay-eligible")
+  })
+
+  test("user-aborted assistant turn cannot authorize wake replay", () => {
+    // given
+    const journal = createJournal(() => 2_750)
+    const entry = journal.queue({ sessionID: "ses-stop", notificationText: "accepted", promptContext: {}, shouldReply: true })
+    const acceptedUser = {
+      info: { id: "user-stop", role: "user" },
+      parts: [{ type: "text", text: entry.injectedText, synthetic: true }],
+    }
+
+    // when
+    const status = journal.recoveryStatus(entry, [acceptedUser, {
+      info: { id: "assistant-aborted", parentID: "user-stop", role: "assistant", finish: "aborted", tokens: { input: 0, output: 0, reasoning: 0 } },
+      parts: [],
+    }])
+
+    // then
+    expect(status).toBe("identity-ambiguous")
+  })
+
   test("retry budget exhaustion dead-letters exactly once and cannot auto-replay", () => {
     // given
     let now = 3_000

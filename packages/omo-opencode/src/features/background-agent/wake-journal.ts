@@ -12,10 +12,12 @@ import { createHash, randomUUID } from "node:crypto"
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { z } from "zod"
+import { isEmptyNoProgressAssistantTurnInfo } from "./empty-assistant-turn"
 import type { ParentWakeSessionMessage } from "./parent-wake-session-message"
 
 export const CLAIM_TTL_MS = 60_000
-export const WAKE_DEADLINE_MS = 15 * 60_000
+export const WAKE_DEADLINE_MS = 30 * 60_000
+export const WAKE_WATCHDOG_INTERVAL_MS = 10 * 60_000
 export const WAKE_RETENTION_MS = 24 * 60 * 60_000
 export const MAX_WAKE_ATTEMPTS = 3
 
@@ -62,6 +64,8 @@ export type WakeClaimResult = {
   readonly generation: number
   readonly entry?: WakeEntry
 }
+
+export type WakeRecoveryStatus = "output-observed" | "replay-eligible" | "identity-absent" | "identity-ambiguous"
 
 type WakeJournalOptions = {
   readonly now?: () => number
@@ -240,16 +244,26 @@ export class WakeJournal {
       if (entry.sessionID !== sessionID || entry.state !== "dispatched-awaiting-output") continue
       const identity = resolveWakeUserMessageID(entry, messages)
       if (!identity) continue
-      const userIndex = messages.findIndex((message) => getMessageID(message) === identity)
-      const outputObserved = messages.some((message, index) => {
+      const outputObserved = messages.some((message) => {
         if (!messageHasOutput(message)) return false
-        return message.info?.parentID === identity || (userIndex >= 0 && index > userIndex)
+        return message.info?.parentID === identity
       })
       if (!outputObserved) continue
       this.write({ ...entry, userMessageID: identity })
       if (this.consume(entry.wakeID, "assistant or tool output observed")) consumed.push(entry.wakeID)
     }
     return consumed
+  }
+
+  recoveryStatus(entry: WakeEntry, messages: readonly ParentWakeSessionMessage[]): WakeRecoveryStatus {
+    const identity = resolveWakeUserMessageID(entry, messages)
+    if (!identity) return "identity-absent"
+    if (messages.some((message) => message.info?.parentID === identity && messageHasOutput(message))) {
+      return "output-observed"
+    }
+    const lastAssistant = [...messages].reverse().find((message) => getMessageRole(message) === "assistant")
+    if (!lastAssistant || !isEmptyNoProgressAssistantTurnInfo(lastAssistant.info)) return "identity-ambiguous"
+    return "replay-eligible"
   }
 
   cleanup(): number {
@@ -327,7 +341,7 @@ function messageHasOutput(message: ParentWakeSessionMessage): boolean {
   const role = getMessageRole(message)
   if (role !== "assistant" && role !== "tool") return false
   if (message.info?.error !== undefined || message.error !== undefined) return false
-  if (!message.parts || message.parts.length === 0) return role === "assistant"
+  if (!message.parts || message.parts.length === 0) return false
   return message.parts.some((part) => part.type === "tool"
     || part.type === "tool_use"
     || part.type === "tool_result"
