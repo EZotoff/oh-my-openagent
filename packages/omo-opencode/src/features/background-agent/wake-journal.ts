@@ -9,9 +9,10 @@
  * be deleted to purge retained entries.
  */
 import { createHash, randomUUID } from "node:crypto"
-import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { z } from "zod"
+import { stripInternalInitiatorMarkers } from "../../shared"
 import { isEmptyNoProgressAssistantTurnInfo } from "./empty-assistant-turn"
 import type { ParentWakeSessionMessage } from "./parent-wake-session-message"
 
@@ -313,20 +314,31 @@ export class WakeJournal {
   }
 }
 
+export function wakeMarker(wakeID: string): string {
+  return `<!-- OMO_WAKE:${wakeID} -->`
+}
+
 export function appendWakeMarker(notificationText: string, wakeID: string): string {
-  return `${notificationText}\n<!-- OMO_WAKE:${wakeID} -->`
+  return `${notificationText}\n${wakeMarker(wakeID)}`
 }
 
 export function hashWakePayload(text: string): string {
   return createHash("sha256").update(text).digest("hex")
 }
 
+// The stored user message is not byte-identical to the injected text: OpenCode
+// appends the internal-initiator marker (and, for noReply wakes, the noreply
+// marker) before persisting. Match the per-wake OMO_WAKE marker first (exact
+// identity), then fall back to the payload hash over the marker-stripped text.
 function resolveWakeUserMessageID(entry: WakeEntry, messages: readonly ParentWakeSessionMessage[]): string | undefined {
   if (entry.userMessageID !== null) return entry.userMessageID
+  const marker = wakeMarker(entry.wakeID)
   for (const message of messages) {
     if (getMessageRole(message) !== "user" || !isSyntheticWakeMessage(message)) continue
     const text = message.parts?.map((part) => part.text ?? "").join("") ?? ""
-    if (hashWakePayload(text) === entry.payloadHash) return getMessageID(message)
+    if (text.includes(marker) || hashWakePayload(stripInternalInitiatorMarkers(text)) === entry.payloadHash) {
+      return getMessageID(message)
+    }
   }
   return undefined
 }

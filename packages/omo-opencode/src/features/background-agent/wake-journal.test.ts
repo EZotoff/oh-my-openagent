@@ -62,6 +62,31 @@ describe("WakeJournal", () => {
     expect(journal.read(entry.wakeID)?.userMessageID).toBe("user-1")
   })
 
+  test("stored wake message carrying internal markers still resolves exact identity", () => {
+    // given
+    const journal = createJournal(() => 2_100)
+    const entry = journal.queue({ sessionID: "ses-markers", notificationText: "accepted", promptContext: {}, shouldReply: true })
+    const claim = journal.claim(entry.wakeID)
+    journal.markDispatched(entry.wakeID, claim.generation, null)
+    // OpenCode persists the injected text with the internal-initiator marker and,
+    // for noReply wakes, the noreply marker appended.
+    const storedText = `${entry.injectedText}\n<!-- OMO_INTERNAL_INITIATOR -->\n<!-- OMO_INTERNAL_NOREPLY -->`
+
+    // when
+    const consumed = journal.observeMessages("ses-markers", [{
+      info: { id: "user-markers", role: "user" },
+      parts: [{ type: "text", text: storedText, synthetic: true }],
+    }, {
+      info: { id: "assistant-markers", parentID: "user-markers", role: "assistant" },
+      parts: [{ type: "text", text: "done" }],
+    }])
+
+    // then
+    expect(consumed).toEqual([entry.wakeID])
+    expect(journal.read(entry.wakeID)?.state).toBe("consumed")
+    expect(journal.read(entry.wakeID)?.userMessageID).toBe("user-markers")
+  })
+
   test("accepted wake crash window is replayable only for an empty unknown-finish assistant", () => {
     // given
     const journal = createJournal(() => 2_500)
