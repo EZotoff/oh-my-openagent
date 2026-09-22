@@ -221,7 +221,9 @@ export class ParentWakeFlushRunner {
     if (claim && claim.status !== "claimed") {
       if (claim.status === "terminal") {
         this.deps.pendingQueue.deleteWake(sessionID)
-        if (claim.entry?.state === "dead-letter") this.deps.onDeadLetter(wakeID, claim.entry.lastError ?? "retry budget exhausted")
+        if (wakeID && claim.entry?.state === "dead-letter") {
+          this.deps.onDeadLetter(wakeID, claim.entry.lastError ?? "retry budget exhausted")
+        }
       }
       return
     }
@@ -315,7 +317,7 @@ export class ParentWakeFlushRunner {
   }
 
   async showDeadLetterToast(journalPath: string): Promise<void> {
-    await this.deps.notifierDeps.client.tui.showToast({
+    await this.deps.notifierDeps.client.tui?.showToast({
       body: {
         title: "Parent wake dead-lettered",
         message: `Automatic replay stopped. Inspect ${journalPath}`,
