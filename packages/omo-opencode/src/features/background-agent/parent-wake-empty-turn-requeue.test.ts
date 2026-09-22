@@ -230,7 +230,7 @@ describe("BackgroundManager parent wake empty-turn recovery", () => {
     ])
   })
 
-  test("#given parent history contains the empty assistant turn #when idle flushes the requeued wake #then one retry prompt is delivered", async () => {
+  test("#given parent history contains the empty assistant turn #when idle fires before the watchdog #then no rapid retry is delivered", async () => {
     // given
     const sessionID = "parent-session-empty-wake"
     const notification = "<system-reminder>done</system-reminder>"
@@ -267,10 +267,8 @@ describe("BackgroundManager parent wake empty-turn recovery", () => {
     // when
     manager.handleEvent({ type: "session.idle", properties: { sessionID } })
     await internals.flushPendingParentWake(sessionID)
-    await waitUntil(() => promptCalls.length === 2, 4_000)
 
     // then
-    expect(promptCalls).toHaveLength(2)
-    expect(JSON.stringify(promptCalls[1]?.body.parts)).toContain(notification)
+    expect(promptCalls).toHaveLength(1)
   })
 })
