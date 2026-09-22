@@ -23,7 +23,6 @@ export type PendingParentWake = {
 export function resolveParentWakePromptContext(promptContext: ParentWakePromptContext): ParentWakePromptContext {
   const resolvedAgent = resolveRegisteredAgentName(promptContext.agent)
   return {
-    ...(wake.wakeID !== undefined ? { wakeID: wake.wakeID } : {}),
     ...promptContext,
     ...(resolvedAgent ? { agent: resolvedAgent } : {}),
     ...(promptContext.model ? { model: { ...promptContext.model } } : {}),
@@ -34,6 +33,7 @@ export function resolveParentWakePromptContext(promptContext: ParentWakePromptCo
 export function cloneParentWake(wake: PendingParentWake): PendingParentWake {
   const promptContext = resolveParentWakePromptContext(wake.promptContext)
   return {
+    ...(wake.wakeID !== undefined ? { wakeID: wake.wakeID } : {}),
     promptContext,
     notifications: [...wake.notifications],
     shouldReply: wake.shouldReply,
