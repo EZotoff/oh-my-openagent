@@ -325,6 +325,10 @@ export class BackgroundManager {
     this.registerProcessCleanup()
   }
 
+  async startWakeJournalSweep(): Promise<void> {
+    await this.parentWakeNotifier.startupSweep()
+  }
+
   private async abortSessionWithLogging(sessionID: string, reason: string): Promise<boolean> {
     try {
       const aborted = await abortWithTimeout(this.client, sessionID)
