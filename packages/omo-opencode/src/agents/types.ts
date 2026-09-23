@@ -126,7 +126,7 @@ function extractModelName(model: string): string {
   return model.includes("/") ? (model.split("/").pop() ?? model) : model;
 }
 
-const GPT_NATIVE_SISYPHUS_RE = /gpt-5[.-](?:(?:3[.-])?codex|[4-9]|\d{2,})/i;
+const GPT_NATIVE_SISYPHUS_RE = /gpt-5[.-](?:(?:3[.-])?codex|[4-9]|\d{2,})|gpt-6[.-]/i;
 
 export function isGptNativeSisyphusModel(model: string): boolean {
   const modelName = extractModelName(model).toLowerCase();
@@ -142,6 +142,12 @@ export function isGpt5_5Model(model: string): boolean {
 export function isGpt5_6Model(model: string): boolean {
   const modelName = extractModelName(model).toLowerCase();
   return modelName.includes("gpt-5.6") || modelName.includes("gpt-5-6");
+}
+
+/** Matches the GPT-6 family: gpt-6, gpt-6-sol, gpt-6-luna (successors of the GPT-5.6 family). */
+export function isGpt6Model(model: string): boolean {
+  const modelName = extractModelName(model).toLowerCase();
+  return /gpt-6(?:$|[.-])/.test(modelName);
 }
 
 export type BuiltinAgentName =
