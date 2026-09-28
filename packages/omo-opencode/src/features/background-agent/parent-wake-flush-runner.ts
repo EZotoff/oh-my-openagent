@@ -266,7 +266,13 @@ export class ParentWakeFlushRunner {
           if (outcome === "dead-letter") this.deps.onDeadLetter(wakeID, reason)
         },
         onDispatchSuppressed: () => {
-          if (wakeID) this.deps.wakeJournal.consume(wakeID, "duplicate dispatch suppressed")
+          if (!wakeID) return
+          const outcome = this.deps.wakeJournal.failOrRequeue(wakeID, "duplicate dispatch suppressed")
+          if (outcome === "dead-letter") this.deps.onDeadLetter(wakeID, "duplicate dispatch retry budget exhausted")
+          if (outcome === "queued") {
+            this.requeueWake(sessionID, latestWake)
+            this.schedulePendingParentWakeFlush(sessionID, 2_000)
+          }
         },
       })
     } finally {
