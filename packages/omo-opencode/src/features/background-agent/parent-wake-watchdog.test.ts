@@ -107,6 +107,76 @@ describe("ParentWakeNotifier wake-journal watchdog", () => {
     }
   })
 
+  test("#given a dispatched wake #when its exact assistant output is observed live #then it is consumed", async () => {
+    // given
+    const sessionID = "live-exact-output"
+    const directory = createDirectory()
+    const { wakeID, injectedText } = seedDispatchedWake(directory, sessionID)
+    const { notifier } = createNotifier(directory, [
+      { info: { id: "user-exact", role: "user" }, parts: [{ type: "text", text: injectedText, synthetic: true }] },
+      { info: { id: "assistant-exact", parentID: "user-exact", role: "assistant" }, parts: [{ type: "text", text: "done" }] },
+    ])
+    notifier.getDispatchedParentWakes().set(sessionID, { wakeID, notifications: ["wake"], promptContext: {}, shouldReply: true })
+
+    try {
+      // when
+      await notifier.consumeDispatchedParentWakeOutput(sessionID)
+
+      // then
+      expect(new WakeJournal(directory).read(wakeID)?.state).toBe("consumed")
+    } finally {
+      notifier.shutdown()
+    }
+  })
+
+  test("#given a dispatched wake #when output belongs to another user message #then it remains awaiting output", async () => {
+    // given
+    const sessionID = "live-other-output"
+    const directory = createDirectory()
+    const { wakeID, injectedText } = seedDispatchedWake(directory, sessionID)
+    const { notifier } = createNotifier(directory, [
+      { info: { id: "user-exact", role: "user" }, parts: [{ type: "text", text: injectedText, synthetic: true }] },
+      { info: { id: "user-other", role: "user" }, parts: [{ type: "text", text: "another prompt" }] },
+      { info: { id: "assistant-other", parentID: "user-other", role: "assistant" }, parts: [{ type: "text", text: "done" }] },
+    ])
+    notifier.getDispatchedParentWakes().set(sessionID, { wakeID, notifications: ["wake"], promptContext: {}, shouldReply: false })
+
+    try {
+      // when
+      await notifier.consumeDispatchedParentWakeOutput(sessionID)
+
+      // then
+      expect(new WakeJournal(directory).read(wakeID)?.state).toBe("dispatched-awaiting-output")
+    } finally {
+      notifier.shutdown()
+    }
+  })
+
+  test("#given two dispatched wakes #when startup sweeps #then only the identity-verified wake is consumed", async () => {
+    // given
+    const sessionID = "startup-identity-sweep"
+    const directory = createDirectory()
+    const first = seedDispatchedWake(directory, sessionID)
+    const second = seedDispatchedWake(directory, sessionID)
+    const { notifier } = createNotifier(directory, [
+      { info: { id: "user-first", role: "user" }, parts: [{ type: "text", text: first.injectedText, synthetic: true }] },
+      { info: { id: "user-second", role: "user" }, parts: [{ type: "text", text: second.injectedText, synthetic: true }] },
+      { info: { id: "assistant-first", parentID: "user-first", role: "assistant" }, parts: [{ type: "text", text: "done" }] },
+    ])
+
+    try {
+      // when
+      await notifier.startupSweep()
+
+      // then
+      const journal = new WakeJournal(directory)
+      expect(journal.read(first.wakeID)?.state).toBe("consumed")
+      expect(journal.read(second.wakeID)?.state).toBe("dispatched-awaiting-output")
+    } finally {
+      notifier.shutdown()
+    }
+  })
+
   test("#given a stale dispatching claim with no persisted wake message #when the watchdog runs #then the wake is requeued for replay", async () => {
     // given
     const sessionID = "watchdog-stale-dispatching"

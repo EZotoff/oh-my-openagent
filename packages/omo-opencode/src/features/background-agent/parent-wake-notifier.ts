@@ -138,12 +138,9 @@ export class ParentWakeNotifier {
     this.dispatchedTracker.clearWake(sessionID)
   }
 
-  // Fast path for the live output handler: the manager already observed real
-  // assistant/tool output for a dispatched wake, so consume its journal entry
-  // without another session-messages round trip. No-op once the tracker is clear.
-  consumeDispatchedParentWakeOutput(sessionID: string): void {
-    const wake = this.dispatchedTracker.getWake(sessionID)
-    if (wake?.wakeID) this.wakeJournal.consume(wake.wakeID, "assistant or tool output observed")
+  async consumeDispatchedParentWakeOutput(sessionID: string): Promise<void> {
+    if (!this.dispatchedTracker.getWake(sessionID)?.wakeID) return
+    await this.observeParentSessionOutput(sessionID)
   }
 
   async observeParentSessionOutput(sessionID: string): Promise<void> {

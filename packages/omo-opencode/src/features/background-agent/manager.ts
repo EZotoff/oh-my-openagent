@@ -1571,7 +1571,9 @@ The fallback retry session is now created and can be inspected directly.
 
   private clearDispatchedParentWake(sessionID: string): void {
     this.clearParentWakeTextDeltaBuffers(sessionID)
-    this.parentWakeNotifier.consumeDispatchedParentWakeOutput(sessionID)
+    void this.parentWakeNotifier.consumeDispatchedParentWakeOutput(sessionID).catch((error: unknown) => {
+      log("[background-agent] Failed to verify parent wake output:", { sessionID, error })
+    })
     this.parentWakeNotifier.clearDispatchedParentWake(sessionID)
   }
 
