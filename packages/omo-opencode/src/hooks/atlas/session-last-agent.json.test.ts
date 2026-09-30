@@ -227,4 +227,36 @@ describe("getLastAgentFromSession JSON backend", () => {
     // then
     expect(result).toBe("sisyphus")
   })
+
+  test("requests a bounded message window from the SDK with a limit query", async () => {
+    // given
+    const sessionID = "ses_json_limit_query"
+    const calls: Array<{ path?: { id?: string }; query?: { limit?: number } }> = []
+    const client = {
+      session: {
+        messages: async (input: { path: { id: string }; query?: { limit?: number } }) => {
+          calls.push(input)
+          return {
+            data: [
+              { id: "msg_0001", info: { agent: "atlas", time: { created: 100 } } },
+            ],
+          }
+        },
+      },
+    }
+
+    const { getLastAgentFromSession } = await importFreshSessionLastAgentModule()
+
+    // when
+    const result = await getLastAgentFromSession(sessionID, client, {
+      isSqliteBackend: () => false,
+      getMessageDir: () => null,
+    })
+
+    // then
+    expect(result).toBe("atlas")
+    expect(calls.length).toBe(1)
+    expect(calls[0]?.path?.id).toBe(sessionID)
+    expect(calls[0]?.query?.limit).toBe(32)
+  })
 })

@@ -10,7 +10,7 @@ import type { BackgroundTaskSnapshot } from "../background-agent/types"
 export type TuiMirrorClient = {
   readonly session: {
     readonly status: () => Promise<unknown>
-    readonly messages: (input: { readonly path: { readonly id: string } }) => Promise<unknown>
+    readonly messages: (input: { readonly path: { readonly id: string }; readonly query?: { readonly limit?: number } }) => Promise<unknown>
   }
 }
 

@@ -22,9 +22,11 @@ const defaultSessionLastAgentDeps: SessionLastAgentDeps = {
 
 type SessionMessagesClient = {
   session: {
-    messages: (input: { path: { id: string } }) => Promise<unknown>
+    messages: (input: { path: { id: string }; query?: { limit?: number } }) => Promise<unknown>
   }
 }
+
+const LAST_AGENT_MESSAGE_WINDOW_LIMIT = 32
 
 async function getLastAgentFromSessionMessages(
   sessionID: string,
@@ -32,7 +34,7 @@ async function getLastAgentFromSessionMessages(
   deps: SessionLastAgentDeps,
 ): Promise<string | null> {
   try {
-    const response = await client.session.messages({ path: { id: sessionID } })
+    const response = await client.session.messages({ path: { id: sessionID }, query: { limit: LAST_AGENT_MESSAGE_WINDOW_LIMIT } })
     const messages = deps.normalizeSDKResponse(response, [] as Array<{
       id?: string
       agent?: string
