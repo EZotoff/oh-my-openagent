@@ -879,27 +879,19 @@ describe("BackgroundManager prompt rejection fallback routing", () => {
 })
 
 describe("BackgroundManager retry observability", () => {
-  test("queues a parent-visible retry notification when fallback retry is scheduled", async () => {
+  test("does not queue a per-hop parent wake when fallback retry is scheduled (logged instead)", async () => {
     //#given
+    const logLines: string[] = []
     const client = {
       session: {
-        messages: async () => [
-          {
-            info: {
-              agent: "hephaestus",
-              model: {
-                providerID: "openai",
-                modelID: "gpt-5",
-                variant: "xhigh",
-              },
-              tools: { bash: "allow", edit: "deny" },
-            },
-          },
-        ],
+        get: async () => ({ data: { directory: tmpdir() } }),
+        create: async () => ({ data: { id: "ses_retry_observable_next" } }),
+        messages: async () => ({ data: [] }),
+        promptAsync: async () => ({}),
         abort: async () => ({}),
       },
     }
-    const manager = new BackgroundManager({ pluginContext: createPluginInput(client) })
+    const manager = new BackgroundManager({ pluginContext: createPluginInput(client), log: (message: string) => { logLines.push(message) } })
     const task = createMockTask({
       id: "bg_retry_observable",
       parentSessionId: "parent-session",
@@ -937,31 +929,20 @@ describe("BackgroundManager retry observability", () => {
       name: "APIError",
       message: "Forbidden: Selected provider is forbidden",
     }, "promptAsync.launch")
+    await flushBackgroundNotifications()
 
-    //#then
-    expect(queuePendingParentWake).toHaveBeenCalledTimes(1)
-    const retryingCall = cast<Array<[string, string, Record<string, unknown>, boolean]>>(
-      queuePendingParentWake.mock.calls,
-    )[0]
-    if (!retryingCall) {
-      throw new Error("Expected retrying parent wake call")
-    }
-    const [sessionID, notification, promptContext, shouldReply] = retryingCall
-    expect(sessionID).toBe("parent-session")
-    expect(promptContext).toEqual({
-      agent: "hephaestus",
-      model: { providerID: "openai", modelID: "gpt-5" },
-      variant: "xhigh",
-      tools: { bash: true, edit: false },
-    })
-    expect(shouldReply).toBe(false)
-    expect(notification).toContain("[BACKGROUND TASK RETRYING]")
-    expect(notification).toContain("ses_retry_visibility")
-    expect(notification).toContain("genai-proxy-openai/gpt-5.4-mini")
-    expect(notification).toContain("anthropic/claude-haiku-4-5")
+    //#then — terminal-only parent wakes: the hop is logged, not injected
+    expect(queuePendingParentWake).not.toHaveBeenCalled()
+    expect(queuePendingParentWake).not.toHaveBeenCalled()
+    const retryingLogLine = logLines.find((line) => line.includes("[BACKGROUND TASK RETRYING]"))
+    expect(retryingLogLine).toBeDefined()
+    expect(retryingLogLine).toContain("bg_retry_observable")
+    expect(retryingLogLine).toContain("ses_retry_visibility")
+    expect(retryingLogLine).toContain("genai-proxy-openai/gpt-5.4-mini")
+    expect(retryingLogLine).toContain("anthropic/claude-haiku-4-5")
   })
 
-  test("falls back to task parent agent when retrying wake cannot load parent messages", async () => {
+  test("falls back to task parent agent when parent wake context cannot load parent messages", async () => {
     //#given
     const client = {
       session: {
@@ -993,36 +974,20 @@ describe("BackgroundManager retry observability", () => {
       currentAttemptID: "att_retry_parent_agent_fallback",
     })
     getTaskMap(manager).set(task.id, task)
-    const queuePendingParentWake = mock(() => {})
-    ;(cast<{
-      queuePendingParentWake: (
-        sessionId: string,
-        notification: string,
-        promptContext: Record<string, unknown>,
-        shouldReply: boolean,
-        delayMs?: number,
-      ) => void
-    }>(manager)).queuePendingParentWake = queuePendingParentWake
 
-    //#when
-    await (cast<{
-      tryFallbackRetry: (task: BackgroundTask, errorInfo: { name?: string; message?: string }, source: string) => Promise<boolean>
-    }>(manager)).tryFallbackRetry(task, {
-      name: "APIError",
-      message: "Forbidden: Selected provider is forbidden",
-    }, "promptAsync.launch")
+    //#when — resolveParentWakePromptContext is the terminal-notification path
+    const promptContext = await (cast<{
+      resolveParentWakePromptContext: (task: BackgroundTask) => Promise<Record<string, unknown>>
+    }>(manager)).resolveParentWakePromptContext(task)
 
     //#then
-    const retryingCall = cast<Array<[string, string, Record<string, unknown>, boolean]>>(
-      queuePendingParentWake.mock.calls,
-    )[0]
-    expect(retryingCall?.[2]).toEqual({
+    expect(promptContext).toEqual({
       agent: "hephaestus",
       tools: { bash: true },
     })
   })
 
-  test("does not invent a parent agent when retrying wake has no context source", async () => {
+  test("does not invent a parent agent when parent wake context has no context source", async () => {
     //#given
     const client = {
       session: {
@@ -1052,56 +1017,30 @@ describe("BackgroundManager retry observability", () => {
       currentAttemptID: "att_retry_no_parent_context",
     })
     getTaskMap(manager).set(task.id, task)
-    const queuePendingParentWake = mock(() => {})
-    ;(cast<{
-      queuePendingParentWake: (
-        sessionId: string,
-        notification: string,
-        promptContext: Record<string, unknown>,
-        shouldReply: boolean,
-        delayMs?: number,
-      ) => void
-    }>(manager)).queuePendingParentWake = queuePendingParentWake
 
     //#when
-    await (cast<{
-      tryFallbackRetry: (task: BackgroundTask, errorInfo: { name?: string; message?: string }, source: string) => Promise<boolean>
-    }>(manager)).tryFallbackRetry(task, {
-      name: "APIError",
-      message: "Forbidden: Selected provider is forbidden",
-    }, "promptAsync.launch")
+    const promptContext = await (cast<{
+      resolveParentWakePromptContext: (task: BackgroundTask) => Promise<Record<string, unknown>>
+    }>(manager)).resolveParentWakePromptContext(task)
 
     //#then
-    const retryingCall = cast<Array<[string, string, Record<string, unknown>, boolean]>>(
-      queuePendingParentWake.mock.calls,
-    )[0]
-    expect(retryingCall?.[2]).toEqual({})
+    expect(promptContext).toEqual({})
   })
 
-  test("queues a second parent-visible notification once the retry session ID is created", async () => {
+  test("does not queue a per-hop parent wake once the retry session ID is created (logged instead)", async () => {
     //#given
+    const logLines: string[] = []
     const queuePendingParentWake = mock(() => {})
     const client = {
       session: {
         get: async () => ({ data: { directory: tmpdir() } }),
         create: async () => ({ data: { id: "ses_retry_created" } }),
-        messages: async () => [
-          {
-            info: {
-              agent: "hephaestus",
-              model: {
-                providerID: "openai",
-                modelID: "gpt-5",
-                variant: "xhigh",
-              },
-              tools: { bash: "allow", edit: "deny" },
-            },
-          },
-        ],
+        messages: async () => ({ data: [] }),
         promptAsync: async () => ({}),
+        abort: async () => ({}),
       },
     }
-    const manager = new BackgroundManager({ pluginContext: createPluginInput(client) })
+    const manager = new BackgroundManager({ pluginContext: createPluginInput(client), log: (message: string) => { logLines.push(message) } })
     ;(cast<{
       queuePendingParentWake: (
         sessionId: string,
@@ -1169,30 +1108,24 @@ describe("BackgroundManager retry observability", () => {
     await (cast<{
       startTask: (queueItem: RetryReadyQueueItem) => Promise<void>
     }>(manager)).startTask(item)
+    await flushBackgroundNotifications()
 
-    //#then
-    const retryReadyCall = cast<Array<[string, string, Record<string, unknown>, boolean, number | undefined]>>(
-      queuePendingParentWake.mock.calls,
-    ).find((call) => call[1].includes("[BACKGROUND TASK RETRY SESSION READY]"))
-    const retryReadyNotification = retryReadyCall?.[1]
-    const expectedRetryLink = `http://127.0.0.1:4096/${Buffer.from(tmpdir()).toString("base64url")}/session/ses_retry_created`
-    expect(retryReadyNotification).toBeDefined()
-    expect(retryReadyCall?.[2]).toEqual({
-      agent: "hephaestus",
-      model: { providerID: "openai", modelID: "gpt-5" },
-      variant: "xhigh",
-      tools: { bash: true, edit: false },
-    })
-    expect(retryReadyNotification).toContain("**Retry attempt:** 2")
-    expect(retryReadyNotification).toContain("ses_retry_created")
-    expect(retryReadyNotification).toContain(expectedRetryLink)
-    expect(retryReadyNotification).toContain("ses_retry_visibility")
-    expect(retryReadyNotification).toContain("genai-proxy-openai/gpt-5.4-mini")
-    expect(retryReadyNotification).toContain("Forbidden: Selected provider is forbidden")
+    //#then — terminal-only parent wakes: the retry session is logged, not injected
+    expect(queuePendingParentWake).not.toHaveBeenCalled()
+    const readyLogLine = logLines.find((line) => line.includes("[BACKGROUND TASK RETRY SESSION READY]"))
+    expect(readyLogLine).toBeDefined()
+    expect(readyLogLine).toContain("bg_retry_ready")
+    expect(readyLogLine).toContain("attempt=2")
+    expect(readyLogLine).toContain("ses_retry_created")
+    expect(readyLogLine).toContain("anthropic/claude-haiku-4.5")
+    expect(task.retryNotification).toBeUndefined()
+
+    manager.shutdown()
   })
 
-  test("builds retry-ready links from the parent session directory when it differs from the manager directory", async () => {
+  test("logs retry-ready from the parent session directory when it differs from the manager directory", async () => {
     //#given
+    const logLines: string[] = []
     const queuePendingParentWake = mock(() => {})
     const managerDirectory = "/manager/dir"
     const parentDirectory = "/parent/dir"
@@ -1200,10 +1133,12 @@ describe("BackgroundManager retry observability", () => {
       session: {
         get: async () => ({ data: { directory: parentDirectory } }),
         create: async () => ({ data: { id: "ses_retry_created_parent_dir" } }),
+        messages: async () => ({ data: [] }),
         promptAsync: async () => ({}),
+        abort: async () => ({}),
       },
     }
-    const manager = new BackgroundManager({ pluginContext: createPluginInput(client, managerDirectory) })
+    const manager = new BackgroundManager({ pluginContext: createPluginInput(client, managerDirectory), log: (message: string) => { logLines.push(message) } })
     ;(cast<{
       queuePendingParentWake: (
         sessionId: string,
@@ -1259,16 +1194,13 @@ describe("BackgroundManager retry observability", () => {
     await (cast<{
       startTask: (queueItem: { task: BackgroundTask; input: typeof taskInput; attemptID: string }) => Promise<void>
     }>(manager)).startTask({ task, input: taskInput, attemptID: "att_retry_ready_parent_dir" })
+    await flushBackgroundNotifications()
 
     //#then
-    const retryReadyNotification = cast<Array<[string, string, Record<string, unknown>, boolean, number | undefined]>>(
-      queuePendingParentWake.mock.calls,
-    )
-      .map((call) => call[1])
-      .find((notification) => notification.includes("[BACKGROUND TASK RETRY SESSION READY]"))
-    const expectedRetryLink = `http://127.0.0.1:4096/${Buffer.from(parentDirectory).toString("base64url")}/session/ses_retry_created_parent_dir`
-    expect(retryReadyNotification).toBeDefined()
-    expect(retryReadyNotification).toContain(expectedRetryLink)
+    expect(queuePendingParentWake).not.toHaveBeenCalled()
+    const readyLogLine = logLines.find((line) => line.includes("[BACKGROUND TASK RETRY SESSION READY]"))
+    expect(readyLogLine).toBeDefined()
+    expect(readyLogLine).toContain("ses_retry_created_parent_dir")
 
     manager.shutdown()
   })
@@ -9000,5 +8932,168 @@ describe("BackgroundManager in-place fallback routing (EZ-PATCH: subagent-fallba
       subagentSessions.delete("shared-session")
       manager.shutdown()
     }
+  })
+})
+
+describe("BackgroundManager terminal notifications - attempt chain summary (terminal-only parent wakes)", () => {
+  function createChainManager(): { manager: BackgroundManager; clientMessages: () => number } {
+    let messagesCalls = 0
+    const promptMock = async () => {
+      const error = new Error("Request aborted while waiting for input")
+      error.name = "MessageAbortedError"
+      throw error
+    }
+    const client = {
+      session: {
+        prompt: promptMock,
+        promptAsync: promptMock,
+        abort: async () => ({}),
+        messages: async () => {
+          messagesCalls++
+          return { data: [] }
+        },
+      },
+    }
+    return { manager: new BackgroundManager({ pluginContext: createPluginInput(client) }), clientMessages: () => messagesCalls }
+  }
+
+  function createChainedTask(id: string, status: BackgroundTask["status"]): BackgroundTask {
+    return createMockTask({
+      id,
+      parentSessionId: "parent-session-chain",
+      sessionId: "ses_chain_child",
+      status,
+      startedAt: new Date(Date.now() - 60_000),
+      completedAt: new Date(),
+      error: status === "error" ? "quota exhausted on final fallback" : undefined,
+      attempts: [
+        {
+          attemptId: `${id}-att-1`,
+          attemptNumber: 1,
+          providerId: "zai-coding-plan",
+          modelId: "glm-5.3",
+          status: "error",
+          error: "you have reached your weekly usage limit",
+        },
+        {
+          attemptId: `${id}-att-2`,
+          attemptNumber: 2,
+          providerId: "ollama-cloud",
+          modelId: "deepseek-v4.1-flash",
+          status: "error",
+          error: "upstream 503",
+        },
+        {
+          attemptId: `${id}-att-3`,
+          attemptNumber: 3,
+          providerId: "opencode-go",
+          modelId: "deepseek-v4.1-flash",
+          status: status === "error" ? "error" : "completed",
+          error: status === "error" ? "quota exhausted on final fallback" : undefined,
+        },
+      ],
+      currentAttemptID: `${id}-att-3`,
+    })
+  }
+
+  async function collectNotification(task: BackgroundTask): Promise<string[]> {
+    const { manager } = createChainManager()
+    getPendingByParent(manager).set(task.parentSessionId, new Set([task.id]))
+    await (cast<{ notifyParentSession: (task: BackgroundTask) => Promise<void> }>(manager))
+      .notifyParentSession(task)
+    await waitForCoalescedFlush(manager, task.parentSessionId)
+    const pendingWake = getPendingParentWakes(manager).get(task.parentSessionId)
+    const notifications = pendingWake?.notifications ?? []
+    manager.shutdown()
+    return notifications
+  }
+
+  test("two-fallback-then-success emits exactly ONE notification with both failed models and the fell-back line", async () => {
+    //#given — task succeeded on attempt 3 after two failed fallback hops
+    const task = createChainedTask("bg_chain_success", "completed")
+
+    //#when
+    const notifications = await collectNotification(task)
+
+    //#then
+    expect(notifications).toHaveLength(1)
+    const notification = notifications[0]
+    if (!notification) {
+      throw new Error("Expected a terminal notification")
+    }
+    expect(notification).toContain("zai-coding-plan/glm-5.3")
+    expect(notification).toContain("ollama-cloud/deepseek-v4.1-flash")
+    expect(notification).toContain("you have reached your weekly usage limit")
+    expect(notification).toContain("upstream 503")
+    expect(notification).toContain("fell back zai-coding-plan/glm-5.3 → opencode-go/deepseek-v4.1-flash")
+    expect(notification).toContain("landed on opencode-go/deepseek-v4.1-flash")
+    expect(notification).not.toContain("[BACKGROUND TASK RETRYING]")
+    expect(notification).not.toContain("[BACKGROUND TASK RETRY SESSION READY]")
+  })
+
+  test("chain exhaustion emits exactly ONE terminal error notification with the full chain", async () => {
+    //#given — all three attempts failed; no next fallback remained
+    const task = createChainedTask("bg_chain_exhausted", "error")
+
+    //#when
+    const notifications = await collectNotification(task)
+
+    //#then
+    expect(notifications).toHaveLength(1)
+    const notification = notifications[0]
+    if (!notification) {
+      throw new Error("Expected a terminal notification")
+    }
+    expect(notification).toContain("[ALL BACKGROUND TASKS FINISHED - 1 FAILED]")
+    expect(notification).toContain("zai-coding-plan/glm-5.3: you have reached your weekly usage limit")
+    expect(notification).toContain("ollama-cloud/deepseek-v4.1-flash: upstream 503")
+    expect(notification).toContain("opencode-go/deepseek-v4.1-flash: quota exhausted on final fallback")
+    expect(notification).toContain("landed on opencode-go/deepseek-v4.1-flash")
+    expect(notification).not.toContain("fell back")
+    expect(notification).not.toContain("[BACKGROUND TASK RETRYING]")
+  })
+
+  test("zero-fallback task notification keeps the pre-patch format", async () => {
+    //#given — single attempt, never fell back
+    const { manager } = createChainManager()
+    const task = createMockTask({
+      id: "bg_no_fallback",
+      parentSessionId: "parent-session-chain",
+      sessionId: "ses_chain_child",
+      status: "completed",
+      startedAt: new Date(Date.now() - 60_000),
+      completedAt: new Date(),
+      attempts: [
+        {
+          attemptId: "bg_no_fallback-att-1",
+          attemptNumber: 1,
+          providerId: "zai-coding-plan",
+          modelId: "glm-5.3",
+          status: "completed",
+        },
+      ],
+      currentAttemptID: "bg_no_fallback-att-1",
+    })
+    getPendingByParent(manager).set(task.parentSessionId, new Set([task.id]))
+
+    //#when
+    await (cast<{ notifyParentSession: (task: BackgroundTask) => Promise<void> }>(manager))
+      .notifyParentSession(task)
+    await waitForCoalescedFlush(manager, task.parentSessionId)
+    const pendingWake = getPendingParentWakes(manager).get(task.parentSessionId)
+    const notifications = pendingWake?.notifications ?? []
+
+    //#then — no chain summary is appended for a single-attempt task
+    expect(notifications).toHaveLength(1)
+    const notification = notifications[0]
+    if (!notification) {
+      throw new Error("Expected a terminal notification")
+    }
+    expect(notification).toContain("[ALL BACKGROUND TASKS COMPLETE]")
+    expect(notification).not.toContain("Fallback chain")
+    expect(notification).not.toContain("fell back")
+    expect(notification).not.toContain("landed on")
+
+    manager.shutdown()
   })
 })

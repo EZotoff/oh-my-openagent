@@ -48,12 +48,50 @@ function formatAttemptTimeline(task: BackgroundTaskNotificationTask): string {
   return `Background task attempts:\n${lines}`
 }
 
+function shortenAttemptError(error: string): string {
+  const oneLine = error.replace(/\s+/g, " ").trim()
+  return oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine
+}
+
+// EZ-PATCH: subagent-fallback-inplace — attempt-chain summary appended to the
+// terminal notification when the task fell back across models. Returns ""
+// (format unchanged) when there was at most one attempt.
+function formatAttemptChainSummary(task: BackgroundTaskNotificationTask): string {
+  const attempts = task.attempts
+  if (!attempts || attempts.length <= 1) {
+    return ""
+  }
+
+  const lines: string[] = []
+  for (const attempt of attempts) {
+    if (attempt.status !== "completed" && attempt.error) {
+      lines.push(`- ${formatAttemptModel(attempt)}: ${shortenAttemptError(attempt.error)}`)
+    }
+  }
+
+  const first = attempts[0]
+  const last = attempts[attempts.length - 1]
+  if (!first || !last) {
+    return ""
+  }
+
+  lines.push(`- landed on ${formatAttemptModel(last)}`)
+  if (task.status === "completed" && formatAttemptModel(first) !== formatAttemptModel(last)) {
+    lines.push(`- fell back ${formatAttemptModel(first)} → ${formatAttemptModel(last)}`)
+  }
+
+  return `\n**Fallback chain:**\n${lines.join("\n")}`
+}
+
 function formatTaskSummaryLine(task: BackgroundTaskNotificationTask): string {
   const baseLine = `- \`${task.id}\`: ${task.description || task.id}`
   const statusSuffix = task.status === "completed"
     ? ""
     : ` [${task.status.toUpperCase()}]${task.error ? ` - ${task.error}` : ""}`
   const timeline = formatAttemptTimeline(task)
+  const chainSummary = formatAttemptChainSummary(task)
+
+  return `${baseLine}${statusSuffix}${timeline ? `\n${timeline}` : ""}${chainSummary}`
 
   return `${baseLine}${statusSuffix}${timeline ? `\n${timeline}` : ""}`
 }
@@ -116,7 +154,7 @@ ${resultCollectionInstruction}${hasFailures ? `\n\n**ACTION REQUIRED:** ${failed
 ${header}
 **ID:** \`${task.id}\`
 **Description:** ${safeDescription(task)}
-**Duration:** ${duration}${errorInfo}
+**Duration:** ${duration}${errorInfo}${formatAttemptChainSummary(task)}
 
 **${remainingCount} task${remainingCount === 1 ? "" : "s"} still in progress.** You WILL be notified when ALL complete.
 ${isFailure ? "**ACTION REQUIRED:** This task failed. Check the error and decide whether to retry, cancel remaining tasks, or continue." : "Do NOT poll - continue productive work."}

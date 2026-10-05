@@ -208,11 +208,6 @@ function cloneAttempts(task: BackgroundTask): BackgroundTaskAttempt[] | undefine
   return task.attempts.map((attempt) => ({ ...attempt }))
 }
 
-function buildLocalSessionUrl(directory: string, sessionID: string): string {
-  const encodedDirectory = Buffer.from(directory).toString("base64url")
-  return `http://127.0.0.1:4096/${encodedDirectory}/session/${sessionID}`
-}
-
 export interface SubagentSessionCreatedEvent {
   sessionID: string
   parentID: string
@@ -879,39 +874,10 @@ export class BackgroundManager {
     task.concurrencyGroup = concurrencyKey
 
     if (task.retryNotification) {
-      const attemptNumber = boundAttempt.attemptNumber
-      const retrySessionUrl = buildLocalSessionUrl(parentDirectory, sessionID)
-      const previousAttempt = getPreviousAttempt(task, boundAttempt.attemptId)
-      const failedSessionID = previousAttempt?.sessionId ?? task.retryNotification.previousSessionID
-      const failedSessionLine = failedSessionID
-        ? `\n- Failed session: \`${failedSessionID}\``
-        : ""
-      const failedModel = formatAttemptModelSummary(previousAttempt) ?? task.retryNotification.failedModel
-      const failedModelLine = failedModel
-        ? `\n- Failed model: \`${failedModel}\``
-        : ""
-      const failedError = previousAttempt?.error ?? task.retryNotification.failedError
-      const failedErrorLine = failedError
-        ? `\n- Error: ${failedError}`
-        : ""
-      const retryModel = formatAttemptModelSummary(boundAttempt) ?? task.retryNotification.nextModel
-      const parentPromptContext = await this.resolveParentWakePromptContext(task)
-      this.queuePendingParentWake(
-        task.parentSessionId,
-        `<system-reminder>
-[BACKGROUND TASK RETRY SESSION READY]
-**ID:** \`${task.id}\`
-**Description:** ${task.description}
-**Retry attempt:** ${attemptNumber}
-**Retry session:** \`${sessionID}\`
-**Retry link:** ${retrySessionUrl}${failedSessionLine}${failedModelLine}${failedErrorLine}${retryModel ? `\n- Model: \`${retryModel}\`` : ""}
-
-The fallback retry session is now created and can be inspected directly.
-</system-reminder>`,
-        parentPromptContext,
-        false,
-        PENDING_PARENT_WAKE_DEBOUNCE_MS,
-      )
+      // EZ-PATCH: subagent-fallback-inplace — terminal-only parent wakes:
+      // the retry session is logged instead of injected into the parent
+      // session; the attempt chain reaches the parent only terminally.
+      this.logger(`[background-agent] [BACKGROUND TASK RETRY SESSION READY] retry session created (logged, no per-hop parent wake): task=${task.id} attempt=${boundAttempt.attemptNumber} session=${sessionID} model=${formatAttemptModelSummary(boundAttempt) ?? task.retryNotification.nextModel ?? "unknown"}`)
       task.retryNotification = undefined
     }
 
@@ -2191,7 +2157,7 @@ The fallback retry session is now created and can be inspected directly.
     source: string,
   ): Promise<boolean> {
     const previousSessionID = task.sessionId
-    let retryingNotification: string | undefined
+    let retrySummary: string | undefined
     let retryInPlace = false
     const result = tryFallbackRetry({
       task,
@@ -2208,30 +2174,21 @@ The fallback retry session is now created and can be inspected directly.
         const currentAttempt = getCurrentAttempt(task)
         const previousAttempt = getPreviousAttempt(task, currentAttempt?.attemptId)
         const sourceText = source ? ` via ${source}` : ""
-        const failedSessionLine = previousAttempt?.sessionId ? `\n- Failed session: \`${previousAttempt.sessionId}\`` : ""
         const failedModel = formatAttemptModelSummary(previousAttempt)
-        const failedModelLine = failedModel ? `\n- Failed model: \`${failedModel}\`` : ""
-        const failedErrorLine = previousAttempt?.error ? `\n- Error: ${previousAttempt.error}` : ""
+        const failedModelText = failedModel ? ` failed=${failedModel}` : ""
+        const failedSessionText = previousAttempt?.sessionId ? ` failedSession=${previousAttempt.sessionId}` : ""
+        const failedErrorText = previousAttempt?.error ? ` error=${previousAttempt.error}` : ""
         const nextModel = formatAttemptModelSummary(currentAttempt)
-        retryingNotification = `<system-reminder>
-[BACKGROUND TASK RETRYING]
-**ID:** \`${task.id}\`
-**Description:** ${task.description}${sourceText}${failedSessionLine}${failedModelLine}${failedErrorLine}${nextModel ? `\n- Next model: \`${nextModel}\`` : ""}
-
-The task was re-queued on a fallback model after a retryable failure.
-</system-reminder>`
+        const nextModelText = nextModel ? ` next=${nextModel}` : ""
+        retrySummary = `task=${task.id}${sourceText}${failedModelText}${failedSessionText}${failedErrorText}${nextModelText}`
       },
     })
     const retried = await result
-    if (retried && retryingNotification) {
-      const parentPromptContext = await this.resolveParentWakePromptContext(task)
-      this.queuePendingParentWake(
-        task.parentSessionId,
-        retryingNotification,
-        parentPromptContext,
-        false,
-        PENDING_PARENT_WAKE_DEBOUNCE_MS,
-      )
+    if (retried && retrySummary) {
+      // EZ-PATCH: subagent-fallback-inplace — terminal-only parent wakes:
+      // the fallback hop is logged instead of injected into the parent
+      // session; the attempt chain reaches the parent only terminally.
+      this.logger(`[background-agent] [BACKGROUND TASK RETRYING] fallback hop scheduled (logged, no per-hop parent wake): ${retrySummary}`)
     }
     // The in-place fallback keeps the same session: its subagentSessions entry,
     // output-observation state, and delegated bootstrap must survive the hop —
