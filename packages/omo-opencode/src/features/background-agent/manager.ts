@@ -33,7 +33,7 @@ import { SessionCategoryRegistry } from "../../shared/session-category-registry"
 import { applySessionPromptParams } from "../../shared/session-prompt-params-helpers"
 import { setSessionTools } from "../../shared/session-tools-store"
 import { normalizeModelFormat } from "../../shared/model-format-normalizer"
-import { clearSessionAgent, setSessionAgent, subagentSessions, updateSessionAgent } from "../claude-code-session-state"
+import { clearSessionAgent, setSessionAgent, setSyntheticSessionErrorEmitter, setTaskManagedSessionResolver, subagentSessions, updateSessionAgent } from "../claude-code-session-state"
 import { MESSAGE_STORAGE } from "../hook-message-injector"
 import { getTaskToastManager } from "../task-toast-manager"
 import { abortWithTimeout } from "./abort-with-timeout"
@@ -318,6 +318,12 @@ export class BackgroundManager {
       },
     )
     this.registerProcessCleanup()
+    // Expose task-attempt ownership and the session.error event boundary to
+    // the runtime-fallback hook without a hooks->features import.
+    setTaskManagedSessionResolver((sessionID) => this.resolveTaskAttemptBySession(sessionID) !== undefined)
+    setSyntheticSessionErrorEmitter((sessionID, error) => {
+      this.handleEvent({ type: "session.error", properties: { sessionID, error } })
+    })
   }
 
   private async abortSessionWithLogging(sessionID: string, reason: string): Promise<boolean> {

@@ -1,8 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import type { PluginInput } from "@opencode-ai/plugin"
 import type { HookDeps, RuntimeFallbackPluginInput } from "./types"
 import type { AutoRetryHelpers } from "./auto-retry"
-import { subagentSessions } from "../../features/claude-code-session-state"
+import { BackgroundManager } from "../../features/background-agent/manager"
+import {
+  setSyntheticSessionErrorEmitter,
+  setTaskManagedSessionResolver,
+  subagentSessions,
+} from "../../features/claude-code-session-state"
 
+const managersToShutdown: BackgroundManager[] = []
+
+async function flushManagerProcessing(): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+}
 type MessageUpdateHandlerModule = typeof import("./message-update-handler")
 
 async function importFreshMessageUpdateHandlerModule(): Promise<MessageUpdateHandlerModule> {
@@ -79,6 +92,11 @@ describe("createMessageUpdateHandler subagent quota abort", () => {
 
   afterEach(() => {
     subagentSessions.clear()
+    setTaskManagedSessionResolver(undefined)
+    setSyntheticSessionErrorEmitter(undefined)
+    for (const manager of managersToShutdown.splice(0)) {
+      manager.shutdown()
+    }
   })
 
   it("#given a subagent session hits a quota error with no fallback configured #when the assistant error event fires #then the subagent session is aborted so the parent tool call can resolve", async () => {
@@ -139,5 +157,79 @@ describe("createMessageUpdateHandler subagent quota abort", () => {
 
     // then
     expect(abortCalls).toEqual([])
+  })
+
+  it("#given a session.error emitter is registered #when the quota abort fires #then the synthetic terminal session.error is emitted BEFORE the session is aborted", async () => {
+    // given
+    const { createMessageUpdateHandler } = await importFreshMessageUpdateHandlerModule()
+    const sessionID = "session-quota-emit-order"
+    subagentSessions.add(sessionID)
+    const order: string[] = []
+    const emittedErrors: Array<{ sessionID: string; error: { name?: string; message?: string } }> = []
+    setSyntheticSessionErrorEmitter((emittedSessionID, error) => {
+      order.push("emit")
+      emittedErrors.push({ sessionID: emittedSessionID, error })
+    })
+    const abortCalls: Array<{ sessionID: string; source: string }> = []
+    const recordingHelpers: AutoRetryHelpers = {
+      ...createHelpers(abortCalls),
+      abortSessionRequest: async (abortedSessionID: string, source: string) => {
+        order.push("abort")
+        abortCalls.push({ sessionID: abortedSessionID, source })
+      },
+    }
+    const handler = createMessageUpdateHandler(createDeps(), recordingHelpers)
+
+    // when
+    await handler({ info: { sessionID, ...QUOTA_INFO } })
+
+    // then
+    expect(order).toEqual(["emit", "abort"])
+    expect(emittedErrors).toEqual([
+      { sessionID, error: { name: "QuotaExceededError", message: QUOTA_ERROR.message.toLowerCase() } },
+    ])
+    expect(abortCalls).toEqual([
+      { sessionID, source: "message.updated.subagent-quota-no-fallback" },
+    ])
+  })
+
+  it("#given a real BackgroundManager owns the session as a task attempt with no fallback configured #when the quota abort fires #then the synthetic session.error finalizes the task with the quota error instead of hanging", async () => {
+    // given
+    const { createMessageUpdateHandler } = await importFreshMessageUpdateHandlerModule()
+    const sessionID = "session-quota-task-finalization"
+    const parentSessionId = "session-quota-parent"
+    const client = {
+      session: {
+        get: async () => ({ data: { id: sessionID } }),
+        prompt: async () => ({}),
+        promptAsync: async () => ({}),
+        abort: async () => ({}),
+        messages: async () => ({ data: [] }),
+      },
+    }
+    const manager = new BackgroundManager({
+      pluginContext: { client, directory: "/test/dir" } as PluginInput,
+    })
+    managersToShutdown.push(manager)
+    const task = await manager.trackTask({
+      taskId: "task-quota-abort",
+      sessionId: sessionID,
+      parentSessionId,
+      description: "quota abort finalization test",
+      agent: "task",
+    })
+    const abortCalls: Array<{ sessionID: string; source: string }> = []
+    const handler = createMessageUpdateHandler(createDeps(), createHelpers(abortCalls))
+
+    // when
+    await handler({ info: { sessionID, ...QUOTA_INFO } })
+    await flushManagerProcessing()
+
+    // then
+    expect(abortCalls).toEqual([
+      { sessionID, source: "message.updated.subagent-quota-no-fallback" },
+    ])
+    expect(task.status).toBe("error")
+    expect(String(task.error)).toContain("exceeded your current quota")
   })
 })

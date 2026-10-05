@@ -2,13 +2,13 @@ import type { HookDeps } from "./types"
 import type { AutoRetryHelpers } from "./auto-retry"
 import { HOOK_NAME } from "./constants"
 import { log } from "../../shared/logger"
-import { extractStatusCode, extractErrorName, classifyErrorType, isRetryableError, extractAutoRetrySignal, containsErrorContent } from "./error-classifier"
+import { extractStatusCode, extractErrorName, classifyErrorType, isRetryableError, extractAutoRetrySignal, containsErrorContent, getErrorMessage } from "./error-classifier"
 import { createFallbackState } from "./fallback-state"
 import { getFallbackModelsForSession } from "./fallback-models"
 import { resolveFallbackBootstrapModel } from "./fallback-bootstrap-model"
 import { dispatchFallbackRetry } from "./fallback-retry-dispatcher"
 import { hasVisibleAssistantResponse } from "./visible-assistant-response"
-import { subagentSessions } from "../../features/claude-code-session-state"
+import { subagentSessions, emitSyntheticSessionError } from "../../features/claude-code-session-state"
 import { resolveMessageEventSessionID } from "../../shared/event-session-id"
 import { normalizeModelToCanonicalString } from "./normalize-model"
 
@@ -166,6 +166,21 @@ export function createMessageUpdateHandler(deps: HookDeps, helpers: AutoRetryHel
             sessionID,
             model,
           })
+          // Fail the owning task FIRST via a synthetic terminal session.error at
+          // the manager event boundary: aborting alone loses the quota error
+          // (the manager treats the abort-induced MessageAbortedError as
+          // transient) and the task hangs holding its concurrency slot. The
+          // emitter is registered by the background-agent manager; when absent
+          // (no manager wired) behavior is unchanged.
+          const errorName = extractErrorName(error)
+          const errorMessage = getErrorMessage(error)
+          const delivered = emitSyntheticSessionError(sessionID, {
+            name: errorName,
+            message: errorMessage,
+          })
+          if (!delivered) {
+            log(`[${HOOK_NAME}] No session.error emitter registered; continuing with abort only`, { sessionID })
+          }
           await helpers.abortSessionRequest(sessionID, "message.updated.subagent-quota-no-fallback")
         }
         return

@@ -144,6 +144,17 @@ const TERMINAL_SESSION_ERROR_PATTERNS: readonly RegExp[] = [
   /no models available/i,
   /no connected providers/i,
   /all providers (?:are )?(?:unavailable|disconnected|exhausted)/i,
+  // Hard quota/entitlement errors never recover within a task's lifetime
+  // (unlike rate limits, which stay transient). A task session hitting one
+  // with no fallback configured must finalize instead of hanging while the
+  // session shell stays alive — the runtime-fallback hook aborts such
+  // sessions after emitting a synthetic session.error (subagent-quota-abort).
+  /quota.?exceeded/i,
+  /exceeded.*quota/i,
+  /usage\s*quota/i,
+  /subscription.?(?:quota|limit)/i,
+  /insufficient.?(?:quota|balance|funds?)/i,
+  /not entitled/i,
 ]
 
 export function isTerminalSessionError(

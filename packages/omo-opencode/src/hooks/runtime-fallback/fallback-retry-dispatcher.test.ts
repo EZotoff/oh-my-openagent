@@ -1,4 +1,10 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, afterEach } from "bun:test"
+
+import type { AutoRetryHelpers } from "./auto-retry"
+import { dispatchFallbackRetry } from "./fallback-retry-dispatcher"
+import { createFallbackState } from "./fallback-state"
+import type { HookDeps, RuntimeFallbackPluginInput } from "./types"
+import { setTaskManagedSessionResolver } from "../../features/claude-code-session-state"
 
 import type { AutoRetryHelpers } from "./auto-retry"
 import { dispatchFallbackRetry } from "./fallback-retry-dispatcher"
@@ -89,5 +95,63 @@ describe("dispatchFallbackRetry", () => {
     expect(state.attemptCount).toBe(0)
     expect(state.pendingFallbackModel).toBe(undefined)
     expect(state.failedModels.size).toBe(0)
+  })
+})
+
+describe("dispatchFallbackRetry task-managed session guard", () => {
+  afterEach(() => {
+    setTaskManagedSessionResolver(undefined)
+  })
+
+  test("#given a task-managed session (background-agent owns fallback) #when the hook dispatch fallback retry runs #then dispatch is skipped without re-prompting or mutating state", async () => {
+    // given
+    const toastMessages: string[] = []
+    const dispatchCalls: string[] = []
+    const deps = createDeps(toastMessages)
+    const helpers = createRejectedDispatchHelpers(dispatchCalls)
+    const sessionID = "session-task-managed"
+    const state = createFallbackState("openai/gpt-5.4")
+    deps.sessionStates.set(sessionID, state)
+    setTaskManagedSessionResolver((id) => id === sessionID)
+
+    // when
+    await dispatchFallbackRetry(deps, helpers, {
+      sessionID,
+      state,
+      fallbackModels: ["litellm/openai.eu.gpt-5.5"],
+      source: "session.error",
+    })
+
+    // then
+    expect(dispatchCalls).toEqual([])
+    expect(toastMessages).toEqual([])
+    expect(state.currentModel).toBe("openai/gpt-5.4")
+    expect(state.fallbackIndex).toBe(-1)
+    expect(state.attemptCount).toBe(0)
+    expect(state.pendingFallbackModel).toBe(undefined)
+  })
+
+  test("#given a non-task session with the resolver registered #when the hook dispatch fallback retry runs #then dispatch proceeds exactly as before", async () => {
+    // given
+    const toastMessages: string[] = []
+    const dispatchCalls: string[] = []
+    const deps = createDeps(toastMessages)
+    const helpers = createRejectedDispatchHelpers(dispatchCalls)
+    const sessionID = "session-head-not-task-managed"
+    const state = createFallbackState("openai/gpt-5.4")
+    deps.sessionStates.set(sessionID, state)
+    setTaskManagedSessionResolver((id) => id === "session-task-managed")
+
+    // when
+    await dispatchFallbackRetry(deps, helpers, {
+      sessionID,
+      state,
+      fallbackModels: ["litellm/openai.eu.gpt-5.5"],
+      source: "session.error",
+    })
+
+    // then
+    expect(dispatchCalls).toEqual(["litellm/openai.eu.gpt-5.5"])
+    expect(toastMessages).toEqual([])
   })
 })

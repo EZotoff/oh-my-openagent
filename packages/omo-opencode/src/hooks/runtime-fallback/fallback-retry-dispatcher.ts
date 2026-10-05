@@ -4,6 +4,7 @@ import { HOOK_NAME } from "./constants"
 import { log } from "../../shared/logger"
 import { prepareFallback } from "./fallback-state"
 import { restoreFallbackState, snapshotFallbackState } from "./fallback-state-snapshot"
+import { isTaskManagedSession } from "../../features/claude-code-session-state"
 
 type DispatchFallbackRetryOptions = {
   sessionID: string
@@ -25,6 +26,13 @@ export async function dispatchFallbackRetry(
   helpers: AutoRetryHelpers,
   options: DispatchFallbackRetryOptions,
 ): Promise<void> {
+  if (isTaskManagedSession(options.sessionID)) {
+    log(`[${HOOK_NAME}] Skipping hook fallback dispatch; session is managed by the background-agent task path`, {
+      sessionID: options.sessionID,
+      source: options.source,
+    })
+    return
+  }
   const snapshot = snapshotFallbackState(options.state)
   const result = prepareFallback(
     options.sessionID,

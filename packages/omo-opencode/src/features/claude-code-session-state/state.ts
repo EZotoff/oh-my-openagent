@@ -14,6 +14,35 @@ export function getMainSessionID(): string | undefined {
   return _mainSessionID
 }
 
+// Dependency inversion for the runtime-fallback hook: the background-agent
+// manager registers a predicate telling whether a session belongs to an
+// active task attempt (the task path then owns fallback for that session),
+// and an emitter that delivers a synthetic session.error at the manager's
+// event boundary. Registered here so hooks never import the manager.
+type TaskManagedSessionResolver = (sessionID: string) => boolean
+type SyntheticSessionErrorEmitter = (sessionID: string, error: { name?: string; message?: string }) => void
+
+let _taskManagedSessionResolver: TaskManagedSessionResolver | undefined
+let _syntheticSessionErrorEmitter: SyntheticSessionErrorEmitter | undefined
+
+export function setTaskManagedSessionResolver(resolver: TaskManagedSessionResolver | undefined): void {
+  _taskManagedSessionResolver = resolver
+}
+
+export function isTaskManagedSession(sessionID: string): boolean {
+  return _taskManagedSessionResolver?.(sessionID) ?? false
+}
+
+export function setSyntheticSessionErrorEmitter(emitter: SyntheticSessionErrorEmitter | undefined): void {
+  _syntheticSessionErrorEmitter = emitter
+}
+
+export function emitSyntheticSessionError(sessionID: string, error: { name?: string; message?: string }): boolean {
+  if (!_syntheticSessionErrorEmitter) return false
+  _syntheticSessionErrorEmitter(sessionID, error)
+  return true
+}
+
 const registeredAgentNames = new Set<string>()
 const registeredAgentAliases = new Map<string, string>()
 
@@ -80,6 +109,8 @@ export function _resetForTesting(): void {
   subagentSessions.clear()
   syncSubagentSessions.clear()
   handedBackSyncSessions.clear()
+  _taskManagedSessionResolver = undefined
+  _syntheticSessionErrorEmitter = undefined
   sessionAgentMap.clear()
   registeredAgentNames.clear()
   registeredAgentAliases.clear()
