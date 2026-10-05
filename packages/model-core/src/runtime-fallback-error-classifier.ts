@@ -127,6 +127,12 @@ export function classifyRuntimeFallbackError(error: unknown): RuntimeFallbackErr
     /额度.*不足/.test(message) ||
     /余额.*不足/.test(message) ||
     /已耗尽/.test(message) ||
+    // Codex OAuth entitlement errors (notification-storm class, 2026-10): the
+    // task-fallback path ORs shouldRetryError with provider-exhaustion
+    // eligibility (classifyRuntimeFallbackError), so these must classify as
+    // quota_exceeded for both task and head sessions to fall back.
+    /no\s+selectable\s+account/i.test(message) ||
+    /not\s+entitled/i.test(message) ||
     isLocalizedQuotaExhaustionMessage(message)
   ) {
     return "quota_exceeded"

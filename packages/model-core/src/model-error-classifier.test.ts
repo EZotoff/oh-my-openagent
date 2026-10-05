@@ -4,6 +4,8 @@ import * as connectedProvidersCache from "./connected-providers-cache"
 
 let readConnectedProvidersCacheSpy: ReturnType<typeof spyOn> | undefined
 const { shouldRetryError, selectFallbackProvider, isRetryableModelError } = await import("./model-error-classifier")
+const { isProviderExhaustionFallbackEligible } = await import("./provider-exhaustion-fallback-policy")
+const { classifyRuntimeFallbackError } = await import("./runtime-fallback-error-classifier")
 
 describe("model-error-classifier", () => {
   beforeEach(() => {
@@ -463,5 +465,84 @@ describe("model-error-classifier", () => {
     expect(result).toBe(true)
   })
 })
+
+describe("notification-storm error classes (task fallback path)", () => {
+  // Rationale: the task-fallback gate is `shouldRetryError(errorInfo) ||
+  // isProviderExhaustionFallbackEligible(errorInfo)` (background-agent/
+  // fallback-retry-handler.ts), and provider-exhaustion eligibility routes
+  // through classifyRuntimeFallbackError — so the runtime-fallback classifier
+  // remains relevant for task sessions (todo-3 only skips hook *dispatch*, not
+  // this classification); the codex entitlement pin therefore lives there.
+
+  const taskPathRetryable = (error: { name?: string; message?: string }): boolean =>
+    shouldRetryError(error) || isProviderExhaustionFallbackEligible(error)
+
+  const CODEX_MSG =
+    "No selectable account succeeded for the requested model. Account acme is not entitled for Codex OAuth models."
+  const WEEKLY_LIMIT_MSG = "you (fixture) have reached your weekly usage limit, upgrade for higher limits"
+
+  test("treats codex entitlement error with AuthenticationError name as retryable via shouldRetryError", () => {
+    //#given
+    const error = { name: "AuthenticationError", message: CODEX_MSG }
+
+    //#when
+    const result = taskPathRetryable(error)
+
+    //#then
+    expect(shouldRetryError(error)).toBe(true)
+    expect(result).toBe(true)
+  })
+
+  test("treats codex entitlement message-only error as retryable via provider-exhaustion eligibility", () => {
+    //#given — no error name reaches the task path for this shape
+    const error = { message: CODEX_MSG }
+
+    //#when
+    const result = taskPathRetryable(error)
+
+    //#then
+    expect(shouldRetryError(error)).toBe(false)
+    expect(classifyRuntimeFallbackError(error)).toBe("quota_exceeded")
+    expect(result).toBe(true)
+  })
+
+  test("treats weekly usage limit message-only error as retryable via provider-exhaustion eligibility", () => {
+    //#given — plain quota message without a named error class
+    const error = { message: WEEKLY_LIMIT_MSG }
+
+    //#when
+    const result = taskPathRetryable(error)
+
+    //#then
+    expect(classifyRuntimeFallbackError(error)).toBe("quota_exceeded")
+    expect(result).toBe(true)
+  })
+
+  test("treats weekly usage limit error with AuthenticationError-like name as retryable via shouldRetryError", () => {
+    //#given
+    const error = { name: "AuthenticationError", message: WEEKLY_LIMIT_MSG }
+
+    //#when
+    const result = taskPathRetryable(error)
+
+    //#then
+    expect(shouldRetryError(error)).toBe(true)
+    expect(result).toBe(true)
+  })
+
+  test("keeps MessageAbortedError non-retryable on both classifiers", () => {
+    //#given
+    const error = { name: "MessageAbortedError", message: "The operation was aborted" }
+
+    //#when
+    const result = taskPathRetryable(error)
+
+    //#then
+    expect(shouldRetryError(error)).toBe(false)
+    expect(isProviderExhaustionFallbackEligible(error)).toBe(false)
+    expect(result).toBe(false)
+  })
+})
+
 
 export {}
