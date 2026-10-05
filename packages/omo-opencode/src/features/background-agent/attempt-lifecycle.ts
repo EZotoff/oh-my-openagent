@@ -169,6 +169,49 @@ export function scheduleRetryAttempt(
   return startAttempt(task, nextModel)
 }
 
+export function startInPlaceRetryAttempt(
+  task: BackgroundTask,
+  failedAttemptID: string,
+  nextModel: DelegatedModelConfig,
+  sessionID: string,
+  error?: string,
+): BackgroundTaskAttempt | undefined {
+  const failedAttempt = finalizeAttempt(task, failedAttemptID, "error", error)
+  if (!failedAttempt || task.currentAttemptID !== failedAttemptID) {
+    return undefined
+  }
+
+  // Mirrors startAttempt, but KEEPS the existing session: the retry re-prompts
+  // the same child session with the next fallback model instead of creating a
+  // fresh one, so task.sessionId and team/session registrations stay intact.
+  const attempt: BackgroundTaskAttempt = {
+    attemptId: `att_${crypto.randomUUID().slice(0, 8)}`,
+    attemptNumber: (task.attempts?.length ?? 0) + 1,
+    sessionId: sessionID,
+    ...toAttemptModel(nextModel),
+    status: "running",
+    startedAt: new Date(),
+  }
+
+  task.attempts = [...(task.attempts ?? []), attempt]
+  task.currentAttemptID = attempt.attemptId
+  task.status = "running"
+  task.startedAt = attempt.startedAt
+  task.completedAt = undefined
+  task.error = undefined
+  task.model = nextModel
+  return attempt
+}
+
+// Current-attempt-first: when several attempts share one sessionID (in-place
+// fallback hops), the LATEST attempt owns the session's events.
 export function findAttemptBySession(task: BackgroundTask, sessionID: string): BackgroundTaskAttempt | undefined {
-  return task.attempts?.find((attempt) => attempt.sessionId === sessionID)
+  const attempts = task.attempts
+  if (!attempts) return undefined
+  for (let index = attempts.length - 1; index >= 0; index--) {
+    if (attempts[index]?.sessionId === sessionID) {
+      return attempts[index]
+    }
+  }
+  return undefined
 }

@@ -2192,16 +2192,19 @@ The fallback retry session is now created and can be inspected directly.
   ): Promise<boolean> {
     const previousSessionID = task.sessionId
     let retryingNotification: string | undefined
+    let retryInPlace = false
     const result = tryFallbackRetry({
       task,
       errorInfo,
       source,
       concurrencyManager: this.concurrencyManager,
       client: this.client,
+      directory: this.directory,
       idleDeferralTimers: this.idleDeferralTimers,
       queuesByKey: this.queuesByKey,
       processKey: (key: string) => this.processKey(key),
-      onRetrying: ({ task, source }) => {
+      onRetrying: ({ task, source, inPlace }) => {
+        retryInPlace = inPlace === true
         const currentAttempt = getCurrentAttempt(task)
         const previousAttempt = getPreviousAttempt(task, currentAttempt?.attemptId)
         const sourceText = source ? ` via ${source}` : ""
@@ -2230,7 +2233,10 @@ The task was re-queued on a fallback model after a retryable failure.
         PENDING_PARENT_WAKE_DEBOUNCE_MS,
       )
     }
-    if (retried && previousSessionID) {
+    // The in-place fallback keeps the same session: its subagentSessions entry,
+    // output-observation state, and delegated bootstrap must survive the hop —
+    // only the fresh-session path detaches the failed session.
+    if (retried && previousSessionID && !retryInPlace) {
       this.clearSessionOutputObserved(previousSessionID)
       this.clearSessionTodoObservation(previousSessionID)
       clearDelegatedChildSessionBootstrap(previousSessionID)

@@ -236,9 +236,38 @@ function createBackgroundManager(): BackgroundManager {
       prompt: async () => ({}),
       promptAsync: async () => ({}),
       abort: async () => ({}),
+      // visible assistant output after the last user message: keeps the legacy
+      // fresh-re-dispatch tests on the hybrid (fresh-session) branch
+      messages: async () => ({
+        data: [
+          { info: { role: "user" }, parts: [{ type: "text", text: "test prompt" }] },
+          { info: { role: "assistant", finish: "stop" }, parts: [{ type: "text", text: "partial assistant output" }] },
+        ],
+      }),
     },
   }
   return new BackgroundManager({ pluginContext: createPluginInput(client) })
+}
+
+function createBackgroundManagerWithOptions(options: Partial<ConstructorParameters<typeof BackgroundManager>[0]>): BackgroundManager {
+  const client = {
+    session: {
+      prompt: async () => ({}),
+      promptAsync: async () => ({}),
+      abort: async () => ({}),
+      messages: async () => ({
+        data: [
+          { info: { role: "user" }, parts: [{ type: "text", text: "test prompt" }] },
+          { info: { role: "assistant", finish: "stop" }, parts: [{ type: "text", text: "partial assistant output" }] },
+        ],
+      }),
+    },
+  }
+  return new BackgroundManager({
+    pluginContext: createPluginInput(client),
+    config: undefined,
+    ...options,
+  })
 }
 
 function createBackgroundManagerWithOptions(options: Partial<ConstructorParameters<typeof BackgroundManager>[0]>): BackgroundManager {
@@ -6967,6 +6996,8 @@ describe("BackgroundManager.handleEvent - session.error", () => {
       },
     })
 
+    await flushBackgroundNotifications()
+
     //#then
     expect(task.status).toBe("pending")
     expect(task.attemptCount).toBe(1)
@@ -7004,6 +7035,8 @@ describe("BackgroundManager.handleEvent - session.error", () => {
         },
       },
     })
+
+    await flushBackgroundNotifications()
 
     //#then
     expect(task.status).toBe("pending")
@@ -7049,6 +7082,8 @@ describe("BackgroundManager.handleEvent - session.error", () => {
         info: messageInfo,
       },
     })
+
+    await flushBackgroundNotifications()
 
     //#then
     expect(task.status).toBe("pending")
@@ -8774,5 +8809,196 @@ describe("BackgroundManager attempt lifecycle bindings", () => {
     expect(abortCalls).toEqual([])
 
     manager.shutdown()
+  })
+})
+
+describe("BackgroundManager in-place fallback routing (EZ-PATCH: subagent-fallback-inplace)", () => {
+  function createInPlaceTask(): BackgroundTask {
+    return createMockTask({
+      id: "task-inplace",
+      parentSessionId: "parent-session",
+      status: "running",
+      sessionId: "shared-session",
+      startedAt: new Date(Date.now() - MIN_IDLE_TIME_MS - 10_000),
+      model: { providerID: "provider-a", modelID: "original-model" },
+      fallbackChain: [
+        { model: "fallback-model-1", providers: ["provider-a"], variant: undefined },
+        { model: "fallback-model-2", providers: ["provider-b"], variant: undefined },
+      ],
+      attempts: [
+        {
+          attemptId: "attempt-1",
+          attemptNumber: 1,
+          sessionId: "shared-session",
+          providerId: "provider-a",
+          modelId: "original-model",
+          status: "error",
+          error: "provider quota exhausted",
+        },
+        {
+          attemptId: "attempt-2",
+          attemptNumber: 2,
+          sessionId: "shared-session",
+          providerId: "provider-a",
+          modelId: "fallback-model-1",
+          status: "running",
+          startedAt: new Date(),
+        },
+      ],
+      currentAttemptID: "attempt-2",
+      attemptCount: 1,
+    })
+  }
+
+  test("resolveTaskAttemptBySession routes a shared sessionID to the LATEST attempt with isCurrent=true", () => {
+    const manager = createBackgroundManager()
+    try {
+      const task = createInPlaceTask()
+      getTaskMap(manager).set(task.id, task)
+
+      const resolved = (cast<{
+        resolveTaskAttemptBySession: (sessionID: string) => { task: BackgroundTask; attemptID?: string; isCurrent: boolean } | undefined
+      }>(manager)).resolveTaskAttemptBySession("shared-session")
+
+      expect(resolved).toBeDefined()
+      expect(resolved?.task).toBe(task)
+      expect(resolved?.attemptID).toBe("attempt-2")
+      expect(resolved?.isCurrent).toBe(true)
+    } finally {
+      manager.shutdown()
+    }
+  })
+
+  test("session.error on the re-prompted session reaches the fallback owner (isCurrent routing, no stuck task)", async () => {
+    const manager = createBackgroundManager()
+    try {
+      const task = createInPlaceTask()
+      getTaskMap(manager).set(task.id, task)
+      const capturedTasks: BackgroundTask[] = []
+      ;(cast<{
+        tryFallbackRetry: (task: BackgroundTask, errorInfo: { name?: string; message?: string }, source: string) => Promise<boolean>
+      }>(manager)).tryFallbackRetry = async (retryTask) => {
+        capturedTasks.push(retryTask)
+        return true
+      }
+
+      manager.handleEvent({
+        type: "session.error",
+        properties: {
+          sessionID: "shared-session",
+          info: { id: "shared-session" },
+          error: { name: "OverloadedError", message: "provider overloaded" },
+        },
+      })
+      await flushBackgroundNotifications()
+
+      // the error routed with isCurrent=true into the fallback owner (attempt chain advances there)
+      expect(capturedTasks).toHaveLength(1)
+      expect(capturedTasks[0]).toBe(task)
+      expect(task.status).toBe("running")
+    } finally {
+      manager.shutdown()
+    }
+  })
+
+  test("abort-induced session.error after an in-place hop does NOT create a spurious extra attempt", async () => {
+    const manager = createBackgroundManager()
+    try {
+      const task = createInPlaceTask()
+      getTaskMap(manager).set(task.id, task)
+      const attemptsBefore = task.attempts?.length
+
+      manager.handleEvent({
+        type: "session.error",
+        properties: {
+          sessionID: "shared-session",
+          info: { id: "shared-session" },
+          error: { name: "MessageAbortedError", message: "This operation was aborted" },
+        },
+      })
+      // monitored: the transient-abort classification awaits session liveness checks
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      await flushBackgroundNotifications()
+
+      // MessageAbortedError is non-retryable and the session shell survives the abort,
+      // so the handler treats it as transient: no new attempt, task still running.
+      expect(task.attempts?.length).toBe(attemptsBefore)
+      expect(task.status).toBe("running")
+    } finally {
+      manager.shutdown()
+    }
+  })
+
+  test("session.idle after the in-place re-prompt completes the task (completion routing on shared sessionID)", async () => {
+    const manager = createBackgroundManager()
+    try {
+      const task = createInPlaceTask()
+      getTaskMap(manager).set(task.id, task)
+      const completed: Array<{ taskId: string }> = []
+      ;(cast<{ validateSessionHasOutput: (sessionID: string) => Promise<boolean> }>(manager)).validateSessionHasOutput = async () => true
+      ;(cast<{ checkSessionTodos: (sessionID: string) => Promise<boolean> }>(manager)).checkSessionTodos = async () => false
+      ;(cast<{ tryCompleteTask: (task: BackgroundTask, source: string) => Promise<boolean> }>(manager)).tryCompleteTask =
+        async (completedTask) => {
+          completed.push({ taskId: completedTask.id })
+          return true
+        }
+
+      manager.handleEvent({
+        type: "session.idle",
+        properties: { sessionID: "shared-session", info: { id: "shared-session" } },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      await flushBackgroundNotifications()
+
+      expect(completed).toHaveLength(1)
+      expect(completed[0]?.taskId).toBe(task.id)
+    } finally {
+      manager.shutdown()
+    }
+  })
+
+  test("manager-driven in-place retry retains the concurrency slot and the subagentSessions entry", async () => {
+    const client = {
+      session: {
+        get: async () => ({ data: { directory: tmpdir() } }),
+        promptAsync: async () => ({}),
+        abort: async () => ({}),
+        messages: async () => ({
+          data: [
+            {
+              info: { role: "user", parts: [{ type: "text", text: "test prompt" }] },
+              parts: [{ type: "text", text: "test prompt" }],
+            },
+          ],
+        }),
+      },
+    }
+    const manager = new BackgroundManager({ pluginContext: createPluginInput(client) })
+    stubNotifyParentSession(manager)
+    try {
+      const task = createInPlaceTask()
+      task.concurrencyKey = "provider-a/original-model"
+      getTaskMap(manager).set(task.id, task)
+      subagentSessions.add("shared-session")
+      const concurrencyManager = getConcurrencyManager(manager)
+      const releaseSpy = spyOn(concurrencyManager, "release")
+
+      const retried = await (cast<{
+        tryFallbackRetry: (task: BackgroundTask, errorInfo: { name?: string; message?: string }, source: string) => Promise<boolean>
+      }>(manager)).tryFallbackRetry(task, { name: "OverloadedError", message: "provider overloaded" }, "session.error")
+      await flushBackgroundNotifications()
+
+      expect(retried).toBe(true)
+      // in-place: slot retained until terminal routing, session registration intact
+      expect(releaseSpy).not.toHaveBeenCalled()
+      expect(task.concurrencyKey).toBe("provider-a/original-model")
+      expect(subagentSessions.has("shared-session")).toBe(true)
+      expect(task.sessionId).toBe("shared-session")
+      expect(task.attempts?.at(-1)?.sessionId).toBe("shared-session")
+      expect(task.attempts?.at(-1)?.modelId).toBe("fallback-model-2")
+    } finally {
+      subagentSessions.delete("shared-session")
+      manager.shutdown()
+    }
   })
 })

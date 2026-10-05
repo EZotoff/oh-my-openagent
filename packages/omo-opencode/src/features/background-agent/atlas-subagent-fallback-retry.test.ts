@@ -91,6 +91,14 @@ function createAtlasHarness(): {
         sessionAlive.set(path.id, false)
         return {}
       },
+      // visible assistant output after the last user message keeps this
+      // harness on the hybrid fresh-re-dispatch branch of the fallback retry
+      messages: async () => ({
+        data: [
+          { info: { role: "user" }, parts: [{ type: "text", text: "Investigate fallback behavior" }] },
+          { info: { role: "assistant", finish: "stop" }, parts: [{ type: "text", text: "partial investigation notes" }] },
+        ],
+      }),
     },
   }
   const manager = new BackgroundManager({ pluginContext: createPluginInput(client, directory) })

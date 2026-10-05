@@ -12,7 +12,13 @@ import {
 } from "../../shared/model-error-classifier"
 import { transformModelForProvider } from "../../shared/provider-model-id-transform"
 import { abortWithTimeout } from "./abort-with-timeout"
-import { ensureCurrentAttempt, scheduleRetryAttempt } from "./attempt-lifecycle"
+import { ensureCurrentAttempt, scheduleRetryAttempt, startInPlaceRetryAttempt } from "./attempt-lifecycle"
+import { dispatchInternalPrompt, isInternalPromptDispatchAccepted } from "../../shared/prompt-async-gate"
+import { isSessionActive, settleAfterSessionIdle } from "../../hooks/shared/session-idle-settle"
+import { hasVisibleAssistantResponse } from "../../hooks/runtime-fallback/visible-assistant-response"
+import { extractAutoRetrySignal } from "../../hooks/runtime-fallback/error-classifier"
+import { getLastUserRetryPayload } from "../../hooks/runtime-fallback/last-user-retry-parts"
+import { createInternalAgentContinuationTextPart } from "../../shared/internal-initiator-marker"
 
 export class TeamModeFallbackError extends Error {
   constructor(message: string) {
@@ -35,7 +41,11 @@ export type FallbackRetryHandlerDeps = {
   selectFallbackProvider: typeof selectFallbackProvider
   transformModelForProvider: typeof transformModelForProvider
   isProviderExhaustionFallbackEligible: (error: unknown) => boolean
+  hasVisibleAssistantResponse: (client: OpencodeClient, directory: string, sessionID: string) => Promise<boolean>
+  isSessionActive: typeof isSessionActive
 }
+
+const checkVisibleAssistantResponse = hasVisibleAssistantResponse(extractAutoRetrySignal)
 
 const defaultFallbackRetryHandlerDeps: FallbackRetryHandlerDeps = {
   log,
@@ -47,6 +57,9 @@ const defaultFallbackRetryHandlerDeps: FallbackRetryHandlerDeps = {
   selectFallbackProvider,
   transformModelForProvider,
   isProviderExhaustionFallbackEligible,
+  hasVisibleAssistantResponse: (client, directory, sessionID) =>
+    checkVisibleAssistantResponse({ client, directory }, sessionID, undefined),
+  isSessionActive,
 }
 
 export async function tryFallbackRetry(args: {
@@ -55,6 +68,7 @@ export async function tryFallbackRetry(args: {
   source: string
   concurrencyManager: ConcurrencyManager
   client: OpencodeClient
+  directory: string
   idleDeferralTimers: Map<string, ReturnType<typeof setTimeout>>
   queuesByKey: Map<string, QueueItem[]>
   processKey: (key: string) => void
@@ -65,6 +79,7 @@ export async function tryFallbackRetry(args: {
     failedModel?: string
     failedError?: string
     nextModel: string
+    inPlace?: boolean
   }) => void
   deps?: Partial<FallbackRetryHandlerDeps>
 }): Promise<boolean> {
@@ -144,6 +159,139 @@ export async function tryFallbackRetry(args: {
     nextModel: `${providerID}/${nextFallback.model}`,
   })
 
+  const previousSessionID = task.sessionId
+  const previousModel = task.model
+
+  const transformedModelId = deps.transformModelForProvider(providerID, nextFallback.model)
+  const nextModel = {
+    providerID,
+    modelID: transformedModelId,
+    variant: nextFallback.variant,
+  }
+
+  // In-place fallback (EZ-PATCH: subagent-fallback-inplace): when the failed
+  // turn produced NO visible assistant output, re-prompt the SAME child session
+  // with the next fallback model instead of creating a fresh session. The
+  // fresh-session re-dispatch below survives as the hybrid branch for sessions
+  // with visible output (partial work must not be re-sent blindly).
+  if (previousSessionID && !(await deps.hasVisibleAssistantResponse(client, args.directory, previousSessionID))) {
+    deps.log("[background-agent] EZ-PATCH: subagent-fallback-inplace — re-prompting same session with next fallback model", {
+      taskId: task.id,
+      source,
+      sessionID: previousSessionID,
+      nextModel: `${providerID}/${transformedModelId}`,
+    })
+
+    // A clean provider rejection (quota/entitlement) already terminated the
+    // generation — only abort when the session still has an active turn, and
+    // let the abort-induced session.error settle BEFORE the new attempt is
+    // created: an async MessageAbortedError landing after the hop would bind
+    // to the new (current) attempt via findAttemptBySession and instantly
+    // fail it. Never fire-and-forget this abort.
+    if (await deps.isSessionActive(client, previousSessionID)) {
+      await abortWithTimeout(client, previousSessionID).catch(() => {})
+      await settleAfterSessionIdle()
+    }
+
+    const inPlaceIdleTimer = idleDeferralTimers.get(task.id)
+    if (inPlaceIdleTimer) {
+      clearTimeout(inPlaceIdleTimer)
+      idleDeferralTimers.delete(task.id)
+    }
+
+    task.attemptCount = selectedAttemptCount
+    const inPlaceFailedAttemptID = ensureCurrentAttempt(task, previousModel).attemptId
+    const inPlaceAttempt = inPlaceFailedAttemptID
+      ? startInPlaceRetryAttempt(task, inPlaceFailedAttemptID, nextModel, previousSessionID, errorInfo.message)
+      : undefined
+    if (!inPlaceAttempt) {
+      return false
+    }
+
+    onRetrying?.({
+      task,
+      source,
+      previousSessionID,
+      failedModel: previousModel ? `${previousModel.providerID}/${previousModel.modelID}` : undefined,
+      failedError: errorInfo.message,
+      nextModel: `${providerID}/${transformedModelId}`,
+      inPlace: true,
+    })
+
+    const messagesResponse = await client.session.messages({
+      path: { id: previousSessionID },
+      query: { directory: args.directory },
+    }).catch(() => undefined)
+    const retryPayload = getLastUserRetryPayload(messagesResponse, previousSessionID)
+    const retryParts = retryPayload.retryParts.length > 0
+      ? retryPayload.retryParts
+      : [createInternalAgentContinuationTextPart("continue")]
+
+    const dispatchInPlacePrompt = (queueBehavior?: "defer") => dispatchInternalPrompt({
+      mode: "async",
+      client,
+      sessionID: previousSessionID,
+      source: `background-agent:in-place-fallback:${source}`,
+      settleMs: 0,
+      // The session's stream just died on the provider rejection; the gate's
+      // checkToolState would see the dead turn as active forever (same rationale
+      // as auto-retry-dispatch).
+      checkToolState: false,
+      ...(queueBehavior ? { queueBehavior } : {}),
+      // The gate's 5s semantic-dedupe hold remembers FAILED prompts; a
+      // per-attempt unique key keeps the re-prompt from being swallowed.
+      dedupeKey: `inplace-retry-${inPlaceAttempt.attemptId}-${Date.now()}`,
+      input: {
+        path: { id: previousSessionID },
+        body: {
+          agent: task.agent,
+          model: { providerID, modelID: transformedModelId },
+          ...(nextModel.variant ? { variant: nextModel.variant } : {}),
+          ...(retryPayload.system ? { system: retryPayload.system } : {}),
+          ...(retryPayload.tools ? { tools: retryPayload.tools } : {}),
+          parts: retryParts,
+        },
+        query: { directory: args.directory },
+      },
+    })
+
+    let inPlaceResult = await dispatchInPlacePrompt("defer")
+    if (inPlaceResult.status === "active") {
+      inPlaceResult = await dispatchInPlacePrompt()
+    }
+    if (inPlaceResult.status === "reserved") {
+      // Session still holds a reservation from the just-failed stream (same
+      // shape as auto-retry-dispatch): retry with linear backoff until the
+      // reservation is released.
+      const MAX_RESERVED_RETRIES = 6
+      const BASE_DELAY_MS = 500
+      for (let attempt = 0; attempt < MAX_RESERVED_RETRIES; attempt++) {
+        const delay = BASE_DELAY_MS * (attempt + 1)
+        deps.log("[background-agent] Session reserved, retrying in-place dispatch:", {
+          taskId: task.id,
+          sessionID: previousSessionID,
+          delayMs: delay,
+        })
+        await new Promise((resolve) => setTimeout(resolve, delay))
+        inPlaceResult = await dispatchInPlacePrompt("defer")
+        if (inPlaceResult.status !== "reserved") break
+      }
+    }
+    if (!isInternalPromptDispatchAccepted(inPlaceResult)) {
+      deps.log("[background-agent] In-place fallback dispatch not accepted:", {
+        taskId: task.id,
+        sessionID: previousSessionID,
+        status: inPlaceResult.status,
+      })
+      return false
+    }
+
+    // The in-place path keeps the subagentSessions entry, the task's session
+    // binding, and its concurrency slot until terminal routing — no release, no
+    // fresh session, no queue push.
+    return true
+  }
+
   if (task.concurrencyKey) {
     concurrencyManager.release(task.concurrencyKey)
     task.concurrencyKey = undefined
@@ -153,16 +301,6 @@ export async function tryFallbackRetry(args: {
   if (idleTimer) {
     clearTimeout(idleTimer)
     idleDeferralTimers.delete(task.id)
-  }
-
-  const previousSessionID = task.sessionId
-  const previousModel = task.model
-
-  const transformedModelId = deps.transformModelForProvider(providerID, nextFallback.model)
-  const nextModel = {
-    providerID,
-    modelID: transformedModelId,
-    variant: nextFallback.variant,
   }
   task.attemptCount = selectedAttemptCount
   const failedAttemptID = ensureCurrentAttempt(task, previousModel).attemptId

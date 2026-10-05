@@ -1,5 +1,7 @@
+import { tmpdir } from "node:os"
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test"
 import { tryFallbackRetry, TeamModeFallbackError, type FallbackRetryHandlerDeps } from "./fallback-retry-handler"
+import { findAttemptBySession } from "./attempt-lifecycle"
 import type { FallbackEntry } from "../../shared/model-requirements"
 import type { ProviderModelsCache } from "../../shared/connected-providers-cache"
 import { QUESTION_DENIED_SESSION_PERMISSION } from "../../shared/question-denied-session-permission"
@@ -12,6 +14,8 @@ const getNextFallbackMock = mock((chain: FallbackEntry[], attempt: number) => ch
 const hasMoreFallbacksMock = mock((chain: FallbackEntry[], attempt: number) => attempt < chain.length)
 const selectFallbackProviderMock = mock((providers: string[]) => providers[0])
 const transformModelForProviderMock = mock((_provider: string, model: string) => model)
+const hasVisibleAssistantResponseMock = mock(async () => true)
+const isSessionActiveMock = mock(async () => false)
 
 import type { BackgroundTask } from "./types"
 import type { ConcurrencyManager } from "./concurrency"
@@ -26,6 +30,8 @@ const retryHandlerDeps: Partial<FallbackRetryHandlerDeps> = {
   hasMoreFallbacks: hasMoreFallbacksMock,
   selectFallbackProvider: selectFallbackProviderMock,
   transformModelForProvider: transformModelForProviderMock,
+  hasVisibleAssistantResponse: hasVisibleAssistantResponseMock,
+  isSessionActive: isSessionActiveMock,
 }
 
 function createDeferredPromise(): {
@@ -75,15 +81,30 @@ function createMockConcurrencyManager(): ConcurrencyManager {
 function createMockClient(): {
   client: OpencodeClient
   abortMock: ReturnType<typeof mock>
+  promptAsyncMock: ReturnType<typeof mock>
+  messagesMock: ReturnType<typeof mock>
 } {
   const abortMock = mock(async () => ({}))
+  const promptAsyncMock = mock(async () => ({}))
+  const messagesMock = mock(async () => ({
+    data: [
+      {
+        info: { role: "user", parts: [{ type: "text", text: "test prompt" }] },
+        parts: [{ type: "text", text: "test prompt" }],
+      },
+    ],
+  }))
   return {
     client: {
       session: {
         abort: abortMock,
+        promptAsync: promptAsyncMock,
+        messages: messagesMock,
       },
     } as never,
     abortMock,
+    promptAsyncMock,
+    messagesMock,
   }
 }
 
@@ -92,7 +113,7 @@ function createDefaultArgs(taskOverrides: Partial<BackgroundTask> = {}) {
   const queuesByKey = new Map<string, QueueItem[]>()
   const idleDeferralTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const concurrencyManager = createMockConcurrencyManager()
-  const { client, abortMock } = createMockClient()
+  const { client, abortMock, promptAsyncMock, messagesMock } = createMockClient()
   const task = createMockTask(taskOverrides)
 
   return {
@@ -101,7 +122,10 @@ function createDefaultArgs(taskOverrides: Partial<BackgroundTask> = {}) {
     source: "polling",
     concurrencyManager,
     client,
+    directory: tmpdir(),
     abortMock,
+    promptAsyncMock,
+    messagesMock,
     idleDeferralTimers,
     queuesByKey,
     processKey: processKeyFn,
@@ -122,6 +146,8 @@ describe("tryFallbackRetry", () => {
     getNextFallbackMock.mockImplementation((chain: FallbackEntry[], attempt: number) => chain[attempt])
     hasMoreFallbacksMock.mockImplementation((chain: FallbackEntry[], attempt: number) => attempt < chain.length)
     transformModelForProviderMock.mockImplementation((_provider: string, model: string) => model)
+    hasVisibleAssistantResponseMock.mockImplementation(async () => true)
+    isSessionActiveMock.mockImplementation(async () => false)
   })
 
   describe("#given retryable error with fallback chain", () => {
@@ -514,5 +540,182 @@ describe("tryFallbackRetry", () => {
       expect(retryInput?.teamRunId).toBe("team-run-abc")
       expect(retryInput?.onSessionCreated).toBe(onSessionCreated)
     })
+  })
+})
+
+describe("tryFallbackRetry in-place fallback (EZ-PATCH: subagent-fallback-inplace)", () => {
+  function createInPlaceArgs(taskOverrides: Partial<BackgroundTask> = {}) {
+    const args = createDefaultArgs({
+      status: "running",
+      sessionId: "shared-session",
+      concurrencyKey: "provider-a/original-model",
+      attempts: [
+        {
+          attemptId: "attempt-1",
+          attemptNumber: 1,
+          sessionId: "shared-session",
+          providerId: "provider-a",
+          modelId: "original-model",
+          status: "running",
+          startedAt: new Date(),
+        },
+      ],
+      currentAttemptID: "attempt-1",
+      ...taskOverrides,
+    })
+    hasVisibleAssistantResponseMock.mockImplementation(async () => false)
+    return args
+  }
+
+  test("#given clean retryable error and no visible assistant output #when fallback retry runs #then re-prompts the SAME session with the next model and no fresh session", async () => {
+    const args = createInPlaceArgs()
+
+    const result = await tryFallbackRetry(args)
+
+    expect(result).toBe(true)
+    expect(args.promptAsyncMock).toHaveBeenCalledTimes(1)
+    const promptCall = args.promptAsyncMock.mock.calls[0]?.[0] as {
+      path: { id: string }
+      body: { model: { providerID: string; modelID: string }; parts: Array<{ type: string; text: string }> }
+    }
+    expect(promptCall.path.id).toBe("shared-session")
+    expect(promptCall.body.model).toEqual({ providerID: "provider-a", modelID: "fallback-model-1" })
+    expect(promptCall.body.parts[0]?.text).toBe("test prompt")
+    // no fresh session: nothing queued, no processKey, last attempt keeps the sessionID
+    expect(args.queuesByKey.size).toBe(0)
+    expect(args.processKey).not.toHaveBeenCalled()
+    expect(args.task.attempts?.at(-1)?.sessionId).toBe("shared-session")
+    expect(args.task.sessionId).toBe("shared-session")
+  })
+
+  test("finalizes the failed attempt and binds the new attempt to the same session while keeping task.sessionId", async () => {
+    const args = createInPlaceArgs()
+
+    await tryFallbackRetry(args)
+
+    expect(args.task.attempts).toHaveLength(2)
+    expect(args.task.attempts?.[0]).toMatchObject({ attemptId: "attempt-1", status: "error", error: "model overloaded" })
+    const nextAttempt = args.task.attempts?.[1]
+    expect(nextAttempt).toMatchObject({
+      sessionId: "shared-session",
+      providerId: "provider-a",
+      modelId: "fallback-model-1",
+      status: "running",
+      attemptNumber: 2,
+    })
+    expect(args.task.currentAttemptID).toBe(nextAttempt?.attemptId)
+    expect(args.task.status).toBe("running")
+    expect(args.task.sessionId).toBe("shared-session")
+    expect(args.task.model).toEqual({ providerID: "provider-a", modelID: "fallback-model-1", variant: undefined })
+  })
+
+  test("retains the concurrency slot: no release, concurrencyKey preserved", async () => {
+    const args = createInPlaceArgs()
+
+    await tryFallbackRetry(args)
+
+    expect(args.concurrencyManager.release).not.toHaveBeenCalled()
+    expect(args.task.concurrencyKey).toBe("provider-a/original-model")
+  })
+
+  test("skips the abort entirely when the session is already settled", async () => {
+    const args = createInPlaceArgs()
+    isSessionActiveMock.mockImplementation(async () => false)
+
+    await tryFallbackRetry(args)
+
+    expect(args.abortMock).not.toHaveBeenCalled()
+    expect(args.promptAsyncMock).toHaveBeenCalledTimes(1)
+  })
+
+  test("aborts and settles before the hop when the session still has an active turn", async () => {
+    const args = createInPlaceArgs()
+    isSessionActiveMock.mockImplementation(async () => true)
+    const callSequence: string[] = []
+    args.abortMock.mockImplementation(async () => {
+      callSequence.push("abort")
+      return {}
+    })
+    args.promptAsyncMock.mockImplementation(async () => {
+      callSequence.push("prompt")
+      return {}
+    })
+
+    await tryFallbackRetry(args)
+
+    expect(callSequence).toEqual(["abort", "prompt"])
+    expect(args.abortMock).toHaveBeenCalledWith({ path: { id: "shared-session" } })
+    expect(args.promptAsyncMock).toHaveBeenCalledTimes(1)
+  })
+
+  test("second in-place hop dispatches again (retry not swallowed by the gate's semantic-dedupe hold)", async () => {
+    const args = createInPlaceArgs()
+
+    const first = await tryFallbackRetry(args)
+    expect(first).toBe(true)
+
+    // simulate a second failure of the re-prompted turn: same session, next fallback
+    const second = await tryFallbackRetry(args)
+    expect(second).toBe(true)
+
+    expect(args.promptAsyncMock).toHaveBeenCalledTimes(2)
+    const secondCall = args.promptAsyncMock.mock.calls[1]?.[0] as {
+      body: { model: { providerID: string; modelID: string } }
+    }
+    expect(secondCall.body.model.modelID).toBe("fallback-model-2")
+    expect(args.task.attempts).toHaveLength(3)
+    expect(args.task.attempts?.at(-1)?.modelId).toBe("fallback-model-2")
+  })
+
+  test("falls through to the fresh-session re-dispatch when the failed turn has visible assistant output", async () => {
+    const args = createInPlaceArgs()
+    hasVisibleAssistantResponseMock.mockImplementation(async () => true)
+
+    const result = await tryFallbackRetry(args)
+
+    expect(result).toBe(true)
+    expect(args.promptAsyncMock).not.toHaveBeenCalled()
+    expect(args.queuesByKey.size).toBe(1)
+    expect(args.processKey).toHaveBeenCalled()
+    expect(args.task.sessionId).toBeUndefined()
+    expect(args.abortMock).toHaveBeenCalledWith({ path: { id: "shared-session" } })
+  })
+
+  test("returns false without crashing when promptAsync rejects with SessionNotFoundError", async () => {
+    const args = createInPlaceArgs()
+    args.promptAsyncMock.mockImplementation(async () => {
+      throw new Error("SessionNotFoundError: session not found")
+    })
+
+    const result = await tryFallbackRetry(args)
+
+    expect(result).toBe(false)
+    expect(args.queuesByKey.size).toBe(0)
+  })
+
+  test("reports inPlace=true through onRetrying", async () => {
+    const args = createInPlaceArgs()
+    const onRetrying = mock(() => {})
+    ;(args as { onRetrying?: typeof onRetrying }).onRetrying = onRetrying
+
+    await tryFallbackRetry(args)
+
+    expect(onRetrying).toHaveBeenCalledWith(expect.objectContaining({ inPlace: true, previousSessionID: "shared-session" }))
+  })
+})
+
+describe("findAttemptBySession current-attempt-first resolution", () => {
+  test("returns the LATEST attempt when multiple attempts share a sessionID", () => {
+    const task = createMockTask({
+      attempts: [
+        { attemptId: "attempt-1", attemptNumber: 1, sessionId: "shared", status: "error" },
+        { attemptId: "attempt-2", attemptNumber: 2, sessionId: "shared", status: "running" },
+        { attemptId: "attempt-3", attemptNumber: 3, sessionId: "other", status: "pending" },
+      ],
+    })
+
+    expect(findAttemptBySession(task, "shared")?.attemptId).toBe("attempt-2")
+    expect(findAttemptBySession(task, "other")?.attemptId).toBe("attempt-3")
+    expect(findAttemptBySession(task, "missing")).toBeUndefined()
   })
 })
