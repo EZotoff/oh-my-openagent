@@ -49,6 +49,14 @@ export class ParentWakeFlushRunner {
     }
     const emptyAssistantTurnRetry = latestWake.allowEmptyAssistantTurnRetry === true
     const forceDispatchAfterActiveDefer = sessionActive && this.shouldForceDispatchAfterActiveDefer(latestWake)
+    // EZ-PATCH: idle-deferral ceiling. A reply-required wake whose queued age
+    // exceeds the active-defer ceiling must NOT be held indefinitely by the
+    // history-deferral guards (unresolved-tool turn, un-inspectable messages,
+    // unanswered question) when the session is IDLE — an idle session has no
+    // in-flight turn to fork, so holding it forever is a pure deadlock
+    // (ses_ef45bab 2026-10-07 incident: 80s+ of "Deferred retained reply-required"
+    // every second, escaped only by a lucky status flip).
+    const forceDispatchIdleCeiling = !sessionActive && this.shouldForceDispatchAfterActiveDefer(latestWake)
     if (sessionActive && !forceDispatchAfterActiveDefer) {
       this.schedulePendingParentWakeFlush(sessionID)
       log("[background-agent] Deferred parent wake because parent session is active:", {
@@ -77,7 +85,7 @@ export class ParentWakeFlushRunner {
     }
 
     const toolWaitDecision = await this.shouldDeferParentWakeForSessionHistory(sessionID, latestWake)
-    if (toolWaitDecision.defer) {
+    if (toolWaitDecision.defer && !forceDispatchIdleCeiling) {
       if (this.deferReplyWakeWhileUnsafe(sessionID, latestWake)) {
         return
       }
@@ -117,7 +125,7 @@ export class ParentWakeFlushRunner {
       latestWake,
       toolWaitDecision,
     )
-    if (finalToolWaitDecision.defer) {
+    if (finalToolWaitDecision.defer && !forceDispatchIdleCeiling) {
       if (this.deferReplyWakeWhileUnsafe(sessionID, latestWake)) {
         return
       }
@@ -142,10 +150,17 @@ export class ParentWakeFlushRunner {
 
     await this.sendParentWakePrompt(sessionID, latestWake, {
       emptyAssistantTurnRetry,
-      toolWaitDecision: finalToolWaitDecision,
-      ...(forceDispatchAfterActiveDefer ? { skipPromptGateStatusCheck: true } : {}),
+      toolWaitDecision: forceDispatchIdleCeiling
+        ? { ...finalToolWaitDecision, skipPromptGateToolStateCheck: true }
+        : finalToolWaitDecision,
+      ...(forceDispatchAfterActiveDefer || forceDispatchIdleCeiling ? { skipPromptGateStatusCheck: true } : {}),
     })
-    if (forceDispatchAfterActiveDefer) {
+    if (forceDispatchIdleCeiling) {
+      log("[background-agent] Sent parent wake after idle-deferral ceiling (history guards bypassed):", {
+        sessionID,
+        queuedAgeMs: this.getQueuedAgeMs(latestWake),
+      })
+    } else if (forceDispatchAfterActiveDefer) {
       log("[background-agent] Sent parent wake after active-session defer ceiling:", {
         sessionID,
         queuedAgeMs: this.getQueuedAgeMs(latestWake),
