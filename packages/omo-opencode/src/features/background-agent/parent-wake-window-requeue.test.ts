@@ -71,15 +71,8 @@ async function waitForTimer(): Promise<void> {
   })
 }
 
-function releaseParentWakeHold(sessionID: string): void {
-  const released = releasePromptAsyncReservation(sessionID, "test:simulate-expired-parent-wake-hold", {
-    reservedBy: "background-agent-parent-wake",
-  })
-  expect(released).toBe(true)
-}
-
 describe("ParentWakeNotifier dispatched wake recovery", () => {
-  test("#given a parent wake is accepted but produces no assistant output #when the recovery window elapses #then the wake is requeued for another dispatch", async () => {
+  test("#given a parent wake is accepted but produces no assistant output #when the legacy recovery window elapses #then replay waits for the durable watchdog", async () => {
     // given
     const { notifier, promptAsyncCalls } = createNotifier()
     const sessionID = "parent-window-no-continuation"
@@ -96,15 +89,15 @@ describe("ParentWakeNotifier dispatched wake recovery", () => {
 
       // then
       expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(false)
-      expect(notifier.getPendingParentWakes().get(sessionID)?.notifications).toEqual([FINAL_WAKE])
-      expect(notifier.getPendingParentWakeTimers().has(sessionID)).toBe(true)
+      expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
+      expect(notifier.getPendingParentWakeTimers().has(sessionID)).toBe(false)
     } finally {
       notifier.shutdown()
       releaseAllPromptAsyncReservationsForTesting()
     }
   })
 
-  test("#given a parent wake is accepted but produces no assistant output #when recovery requeues it #then the manager callback fires before the retry timer settles", async () => {
+  test("#given a parent wake is accepted but produces no assistant output #when the legacy window elapses #then it does not bypass the watchdog", async () => {
     // given
     const requeuedSessionIDs: string[] = []
     const { notifier, promptAsyncCalls } = createNotifier({
@@ -123,16 +116,16 @@ describe("ParentWakeNotifier dispatched wake recovery", () => {
       await waitForTimer()
 
       // then
-      expect(requeuedSessionIDs).toEqual([sessionID])
-      expect(notifier.getPendingParentWakes().has(sessionID)).toBe(true)
-      expect(notifier.getPendingParentWakeTimers().has(sessionID)).toBe(true)
+      expect(requeuedSessionIDs).toEqual([])
+      expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
+      expect(notifier.getPendingParentWakeTimers().has(sessionID)).toBe(false)
     } finally {
       notifier.shutdown()
       releaseAllPromptAsyncReservationsForTesting()
     }
   })
 
-  test("#given a requeued parent wake still produces no assistant output #when the retry window elapses #then the wake is not retried forever", async () => {
+  test("#given an accepted wake produces no assistant output #when multiple legacy windows elapse #then no rapid retry occurs", async () => {
     // given
     const { notifier, promptAsyncCalls } = createNotifier()
     const sessionID = "parent-window-no-continuation-retry-budget"
@@ -142,11 +135,6 @@ describe("ParentWakeNotifier dispatched wake recovery", () => {
       await notifier.flushPendingParentWake(sessionID)
       expect(promptAsyncCalls).toHaveLength(1)
       await waitForTimer()
-      expect(notifier.getPendingParentWakes().get(sessionID)?.noAssistantOutputRetryCount).toBe(1)
-
-      releaseParentWakeHold(sessionID)
-      await notifier.flushPendingParentWake(sessionID)
-      expect(promptAsyncCalls).toHaveLength(2)
 
       // when
       await waitForTimer()
@@ -155,7 +143,7 @@ describe("ParentWakeNotifier dispatched wake recovery", () => {
       expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(false)
       expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
       expect(notifier.getPendingParentWakeTimers().has(sessionID)).toBe(false)
-      expect(promptAsyncCalls).toHaveLength(2)
+      expect(promptAsyncCalls).toHaveLength(1)
     } finally {
       notifier.shutdown()
       releaseAllPromptAsyncReservationsForTesting()

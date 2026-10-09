@@ -109,7 +109,11 @@ export async function run(options: RunOptions): Promise<number> {
         abortController,
         verbose: options.verbose ?? false,
       }
-      const events = await client.event.subscribe({ query: { directory } })
+      // omo--runner-event-unsubscribe: pass the run's abort signal so the SSE
+      // closes when the run completes/SIGINTs. Without it every in-process
+      // dispatch leaked a persistent self-SSE (64+ sockets, 4-15 MiB/s
+      // loopback self-congestion, 2026-09-30).
+      const events = await client.event.subscribe({ query: { directory }, signal: abortController.signal })
       const eventState = createEventState()
       eventState.agentColorsByName = await loadAgentProfileColors(client)
       const eventProcessor = processEvents(ctx, events.stream, eventState).catch(

@@ -1,6 +1,6 @@
 import type { AgentConfig } from "@opencode-ai/sdk";
 import type { AgentMode, AgentPromptMetadata } from "../types";
-import { isGpt5_5Model, isGpt5_6Model } from "../types";
+import { isGpt5_5Model, isGpt5_6Model, isGpt6Model } from "../types";
 import type {
   AvailableAgent,
   AvailableTool,
@@ -20,6 +20,8 @@ const GPT_5_3_CODEX_RE = /^gpt-5[.-]3-codex(?:$|[.-])/i;
 const GPT_5_4_RE = /^gpt-5[.-]4(?:$|[.-])/i;
 const GPT_5_5_RE = /^gpt-5[.-]5(?:$|[.-])/i;
 const GPT_5_6_RE = /^gpt-5[.-]6(?:$|[.-])/i;
+/** GPT-6 family (gpt-6, gpt-6-sol, gpt-6-luna) — successors of the GPT-5.6 line; reuse the latest (GPT-5.6) prompt. */
+const GPT_6_RE = /^gpt-6(?:$|[.-])/i;
 
 export type HephaestusPromptSource = "gpt-5-6" | "gpt-5-5" | "gpt-5-4" | "gpt";
 
@@ -28,7 +30,7 @@ export class UnsupportedHephaestusModelError extends Error {
 
   constructor(model: string | undefined) {
     super(
-      `Hephaestus only supports GPT-5.3 Codex, GPT-5.4, GPT-5.5, and GPT-5.6 models; received ${model ?? "no model"}.`,
+      `Hephaestus only supports GPT-5.3 Codex, GPT-5.4, GPT-5.5, GPT-5.6, and GPT-6 models; received ${model ?? "no model"}.`,
     );
     this.name = "UnsupportedHephaestusModelError";
     this.model = model;
@@ -46,7 +48,8 @@ export function isHephaestusSupportedModel(model: string | undefined): boolean {
     GPT_5_3_CODEX_RE.test(modelName) ||
     GPT_5_4_RE.test(modelName) ||
     GPT_5_5_RE.test(modelName) ||
-    GPT_5_6_RE.test(modelName)
+    GPT_5_6_RE.test(modelName) ||
+    GPT_6_RE.test(modelName)
   );
 }
 
@@ -60,7 +63,7 @@ export function getHephaestusPromptSource(
   model?: string,
 ): HephaestusPromptSource {
   assertHephaestusSupportedModel(model);
-  if (model && isGpt5_6Model(model)) {
+  if (model && (isGpt5_6Model(model) || isGpt6Model(model))) {
     return "gpt-5-6";
   }
   if (model && isGpt5_5Model(model)) {

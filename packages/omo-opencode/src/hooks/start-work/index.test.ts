@@ -773,7 +773,7 @@ You are starting an Atlas work session.
 
       // atlas is registered in beforeEach, so it must be selected
       expect(output.message.agent).toBe("atlas")
-      expect(sessionState.getSessionAgent("ses-sisyphus-to-atlas")).toBe("atlas")
+      expect(sessionState.getSessionAgent("ses-sisyphus-to-atlas")).toBe("Atlas")
     })
 
     test("should keep the current agent when Atlas is unavailable", async () => {
@@ -796,7 +796,7 @@ You are starting an Atlas work session.
 
       // then
       expect(output.message.agent).toBe("sisyphus")
-      expect(sessionState.getSessionAgent("ses-prometheus-to-sisyphus")).toBe("sisyphus")
+      expect(sessionState.getSessionAgent("ses-prometheus-to-sisyphus")).toBe("Sisyphus")
     })
 
     test("should fall back to Sisyphus instead of keeping Prometheus when Atlas is unavailable", async () => {
@@ -824,7 +824,7 @@ You are starting an Atlas work session.
 
       // then
       expect(output.message.agent).toBe("sisyphus")
-      expect(sessionState.getSessionAgent("ses-prometheus-to-worker")).toBe("sisyphus")
+      expect(sessionState.getSessionAgent("ses-prometheus-to-worker")).toBe("Sisyphus")
       expect(readBoulderState(testDir)?.agent).toBe("sisyphus")
     })
 

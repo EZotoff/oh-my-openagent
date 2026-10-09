@@ -195,6 +195,11 @@ export function createManagers(args: {
     enableParentSessionNotifications: backgroundNotificationHookEnabled,
     modelFallbackControllerAccessor,
   })
+  if (backgroundManager instanceof BackgroundManager) {
+    void backgroundManager.startWakeJournalSweep().catch((error: unknown) => {
+      log("[create-managers] Wake journal startup sweep failed:", { error })
+    })
+  }
 
   if (pluginConfig.tui?.sidebar?.enabled !== false) {
     tuiStateMirror = new deps.TuiStateMirrorClass({

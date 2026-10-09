@@ -10,6 +10,7 @@ import { getErrorText } from "./error-classifier"
 import { createEmptyAssistantTurnRetryDedupeKey } from "./parent-wake-history-state"
 import { cloneParentWake, isRedundantParentWake, type PendingParentWake } from "./parent-wake-dedupe"
 import type { ToolWaitDeferralDecision } from "./parent-wake-session-history"
+import { appendWakeMarker } from "./wake-journal"
 
 type ParentWakePromptDispatchInput = {
   readonly client: PromptDispatchClient
@@ -26,10 +27,16 @@ type ParentWakePromptDispatchInput = {
   readonly trackDispatchedWake: (wake: PendingParentWake, dispatchedAt: number) => void
   readonly requeueWake: (wake: PendingParentWake) => void
   readonly scheduleFlush: (delayMs?: number) => void
+  readonly onDispatchAccepted?: () => void
+  readonly onDispatchDeferred?: (reason: string) => void
+  readonly onDispatchSuppressed?: () => void
 }
 
 export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput): Promise<void> {
-  const notificationContent = input.latestWake.notifications.join("\n\n")
+  const baseNotificationContent = input.latestWake.notifications.join("\n\n")
+  const notificationContent = input.latestWake.wakeID
+    ? appendWakeMarker(baseNotificationContent, input.latestWake.wakeID)
+    : baseNotificationContent
   let dispatchStartedAt = Date.now()
   try {
     dispatchStartedAt = Date.now()
@@ -66,6 +73,7 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
         if (await input.hasRecordedPromptAfterDispatch(dispatchedWake)) {
           markRetainedNoReplyAdmission(input, dispatchStartedAt)
           input.trackDispatchedWake(createTrackedDispatchedWake(input.latestWake, input.forceNoReply), dispatchStartedAt)
+          input.onDispatchAccepted?.()
           log("[background-agent] Treated failed parent wake prompt as accepted after observing session history:", {
             sessionID: input.sessionID,
             error: promptResult.error,
@@ -81,9 +89,11 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
         log("[background-agent] Suppressed duplicate parent wake during promptAsync gate hold:", {
           sessionID: input.sessionID,
         })
+        input.onDispatchSuppressed?.()
         return
       }
       input.requeueWake(input.latestWake)
+      input.onDispatchDeferred?.("prompt gate reserved")
       input.scheduleFlush(2_000)
       log("[background-agent] Requeued parent wake flush reserved by promptAsync gate hold:", {
         sessionID: input.sessionID,
@@ -92,6 +102,7 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
     }
     if (!isInternalPromptDispatchAccepted(promptResult)) {
       input.requeueWake(input.latestWake)
+      input.onDispatchDeferred?.(`prompt gate ${promptResult.status}`)
       input.scheduleFlush()
       log("[background-agent] Deferred parent wake skipped by promptAsync gate:", {
         sessionID: input.sessionID,
@@ -103,9 +114,11 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
     delete input.latestWake.allowEmptyAssistantTurnRetry
     markRetainedNoReplyAdmission(input, dispatchStartedAt)
     input.trackDispatchedWake(createTrackedDispatchedWake(input.latestWake, input.forceNoReply), dispatchStartedAt)
+    input.onDispatchAccepted?.()
   } catch (error) {
     const errorText = error instanceof Error ? `${error.name}: ${error.message}` : getErrorText(error) || String(error)
     input.requeueWake(input.latestWake)
+    input.onDispatchDeferred?.(errorText)
     input.scheduleFlush()
     log("[background-agent] Failed to send deferred parent wake:", { sessionID: input.sessionID, error: errorText })
   }

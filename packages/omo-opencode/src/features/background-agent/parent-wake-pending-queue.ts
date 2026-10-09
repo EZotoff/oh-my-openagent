@@ -47,11 +47,13 @@ export class ParentWakePendingQueue {
     notification: string,
     promptContext: ParentWakePromptContext,
     shouldReply: boolean,
+    wakeID?: string,
   ): void {
     const now = Date.now()
     const resolvedPromptContext = resolveParentWakePromptContext(promptContext)
     const pendingWake = this.pendingParentWakes.get(sessionID)
     if (pendingWake) {
+      pendingWake.wakeID ??= wakeID
       pendingWake.queuedAt ??= now
       const mergedNotifications = mergeParentWakeNotifications(pendingWake.notifications, notification)
       const notificationsChanged = mergedNotifications.length !== pendingWake.notifications.length
@@ -67,6 +69,7 @@ export class ParentWakePendingQueue {
     }
 
     this.pendingParentWakes.set(sessionID, {
+      ...(wakeID !== undefined ? { wakeID } : {}),
       promptContext: resolvedPromptContext,
       notifications: [notification],
       shouldReply,
@@ -78,6 +81,7 @@ export class ParentWakePendingQueue {
     const now = Date.now()
     const pendingWake = this.pendingParentWakes.get(sessionID)
     if (pendingWake) {
+      pendingWake.wakeID ??= latestWake.wakeID
       const existingQueuedAt = pendingWake.queuedAt ?? now
       const latestQueuedAt = latestWake.queuedAt ?? now
       pendingWake.queuedAt = Math.min(existingQueuedAt, latestQueuedAt)

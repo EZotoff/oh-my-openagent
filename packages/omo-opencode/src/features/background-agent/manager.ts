@@ -326,6 +326,10 @@ export class BackgroundManager {
     })
   }
 
+  async startWakeJournalSweep(): Promise<void> {
+    await this.parentWakeNotifier.startupSweep()
+  }
+
   private async abortSessionWithLogging(sessionID: string, reason: string): Promise<boolean> {
     try {
       const aborted = await abortWithTimeout(this.client, sessionID)
@@ -1539,6 +1543,9 @@ export class BackgroundManager {
 
   private clearDispatchedParentWake(sessionID: string): void {
     this.clearParentWakeTextDeltaBuffers(sessionID)
+    void this.parentWakeNotifier.consumeDispatchedParentWakeOutput(sessionID).catch((error: unknown) => {
+      log("[background-agent] Failed to verify parent wake output:", { sessionID, error })
+    })
     this.parentWakeNotifier.clearDispatchedParentWake(sessionID)
   }
 

@@ -8,6 +8,7 @@ export type ParentWakePromptContext = {
 }
 
 export type PendingParentWake = {
+  wakeID?: string
   promptContext: ParentWakePromptContext
   notifications: string[]
   shouldReply: boolean
@@ -32,6 +33,7 @@ export function resolveParentWakePromptContext(promptContext: ParentWakePromptCo
 export function cloneParentWake(wake: PendingParentWake): PendingParentWake {
   const promptContext = resolveParentWakePromptContext(wake.promptContext)
   return {
+    ...(wake.wakeID !== undefined ? { wakeID: wake.wakeID } : {}),
     promptContext,
     notifications: [...wake.notifications],
     shouldReply: wake.shouldReply,

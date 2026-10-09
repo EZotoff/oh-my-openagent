@@ -8,10 +8,12 @@ import type { ToolWaitDeferralDecision } from "./parent-wake-session-history"
 import { ParentWakeSessionInspector } from "./parent-wake-session-inspector"
 import type { ParentWakeNotifierDeps, ParentWakeNotifierOptions } from "./parent-wake-notifier-types"
 import {
-  handleDispatchedParentWakeWindowElapsed,
-  logParentWakeWindowRecoveryError,
-  rescheduleParentWakeWindowRecoveryAfterError,
-} from "./parent-wake-window-recovery"
+  WakeJournal,
+  CLAIM_TTL_MS,
+  WAKE_DEADLINE_MS,
+  WAKE_WATCHDOG_INTERVAL_MS,
+  type WakeEntry,
+} from "./wake-journal"
 
 export type { ParentWakePromptContext, PendingParentWake } from "./parent-wake-dedupe"
 
@@ -20,6 +22,8 @@ export class ParentWakeNotifier {
   private readonly dispatchedTracker: ParentWakeDispatchedTracker
   private readonly sessionInspector: ParentWakeSessionInspector
   private readonly flushRunner: ParentWakeFlushRunner
+  private readonly wakeJournal: WakeJournal
+  private readonly watchdogTimer: ReturnType<typeof setInterval>
   private readonly onPendingWakeRequeued?: (sessionID: string) => void
 
   constructor(
@@ -27,6 +31,7 @@ export class ParentWakeNotifier {
     options: ParentWakeNotifierOptions,
   ) {
     this.onPendingWakeRequeued = deps.onPendingWakeRequeued
+    this.wakeJournal = new WakeJournal(deps.directory)
     this.pendingQueue = new ParentWakePendingQueue({
       pendingRetryMs: options.pendingRetryMs,
       enqueueNotificationForParent: deps.enqueueNotificationForParent,
@@ -34,23 +39,10 @@ export class ParentWakeNotifier {
     this.dispatchedTracker = new ParentWakeDispatchedTracker({
       failureRequeueWindowMs: options.failureRequeueWindowMs,
       onFailureRequeueWindowElapsed: (sessionID, wake) => {
-        void handleDispatchedParentWakeWindowElapsed({
-          sessionID,
-          wake,
-          dispatchedTracker: this.dispatchedTracker,
-          sessionInspector: this.sessionInspector,
-          requeueWake: (latestWake) => this.requeueWake(sessionID, latestWake),
-          scheduleFlush: () => this.schedulePendingParentWakeFlush(sessionID),
+        void this.observeParentSessionOutput(sessionID).finally(() => {
+          this.dispatchedTracker.clearWake(sessionID)
         }).catch((error: unknown) => {
-          logParentWakeWindowRecoveryError(
-            sessionID,
-            error,
-          )
-          rescheduleParentWakeWindowRecoveryAfterError(
-            sessionID,
-            wake,
-            this.dispatchedTracker,
-          )
+          log("[background-agent] Failed to inspect dispatched wake output:", { sessionID, error, wake })
         })
       },
     })
@@ -66,7 +58,15 @@ export class ParentWakeNotifier {
       pendingQueue: this.pendingQueue,
       dispatchedTracker: this.dispatchedTracker,
       sessionInspector: this.sessionInspector,
+      wakeJournal: this.wakeJournal,
+      onDeadLetter: (wakeID, reason) => this.reportDeadLetter(wakeID, reason),
     })
+    this.watchdogTimer = setInterval(() => {
+      void this.runWatchdog().catch((error: unknown) => {
+        log("[background-agent] Wake journal watchdog failed:", { error })
+      })
+    }, WAKE_WATCHDOG_INTERVAL_MS)
+    this.watchdogTimer.unref?.()
   }
 
   getPendingParentWakes(): Map<string, PendingParentWake> {
@@ -112,7 +112,21 @@ export class ParentWakeNotifier {
     shouldReply: boolean,
     delayMs?: number,
   ): void {
-    this.pendingQueue.queueWake(sessionID, notification, promptContext, shouldReply)
+    const existingWake = this.pendingQueue.getWake(sessionID)
+    if (existingWake) {
+      this.pendingQueue.queueWake(sessionID, notification, promptContext, shouldReply, existingWake.wakeID)
+      const merged = this.pendingQueue.getWake(sessionID)
+      if (merged?.wakeID) {
+        this.wakeJournal.updateQueued(merged.wakeID, {
+          notificationText: merged.notifications.join("\n\n"),
+          promptContext: merged.promptContext,
+          shouldReply: merged.shouldReply,
+        })
+      }
+    } else {
+      const entry = this.wakeJournal.queue({ sessionID, notificationText: notification, promptContext, shouldReply })
+      this.pendingQueue.queueWake(sessionID, notification, promptContext, shouldReply, entry.wakeID)
+    }
     this.schedulePendingParentWakeFlush(sessionID, delayMs)
   }
 
@@ -122,6 +136,46 @@ export class ParentWakeNotifier {
 
   clearDispatchedParentWake(sessionID: string): void {
     this.dispatchedTracker.clearWake(sessionID)
+  }
+
+  async consumeDispatchedParentWakeOutput(sessionID: string): Promise<void> {
+    if (!this.dispatchedTracker.getWake(sessionID)?.wakeID) return
+    await this.observeParentSessionOutput(sessionID)
+  }
+
+  async observeParentSessionOutput(sessionID: string): Promise<void> {
+    const messages = await this.sessionInspector.getMessages(sessionID)
+    if (messages) this.wakeJournal.observeMessages(sessionID, messages)
+  }
+
+  async startupSweep(): Promise<void> {
+    this.wakeJournal.cleanup()
+    const now = Date.now()
+    for (const entry of this.wakeJournal.list()) {
+      if (entry.state === "consumed" || entry.state === "dead-letter") continue
+      const messages = await this.sessionInspector.getMessages(entry.sessionID)
+      if (messages && this.wakeJournal.observeMessages(entry.sessionID, messages).includes(entry.wakeID)) continue
+      if (entry.state === "dispatched-awaiting-output") {
+        const dispatchedAt = entry.dispatchedAt ?? now
+        if (now - dispatchedAt < WAKE_DEADLINE_MS) continue
+        if (!messages || this.wakeJournal.recoveryStatus(entry, messages) !== "replay-eligible") continue
+        const outcome = this.wakeJournal.failOrRequeue(entry.wakeID, "startup sweep wake deadline elapsed")
+        if (outcome === "dead-letter") this.reportDeadLetter(entry.wakeID, "startup sweep wake deadline elapsed")
+        if (outcome === "queued") this.enqueueJournalWake(entry)
+        continue
+      }
+      const claimAge = entry.claimedAt === null ? CLAIM_TTL_MS : now - entry.claimedAt
+      if (entry.state === "dispatching" && claimAge < CLAIM_TTL_MS) continue
+      if (entry.state === "dispatching" && messages) {
+        const recoveryStatus = this.wakeJournal.recoveryStatus(entry, messages)
+        if (recoveryStatus === "output-observed") {
+          this.wakeJournal.consume(entry.wakeID, "assistant or tool output observed during startup sweep")
+          continue
+        }
+        if (recoveryStatus === "identity-ambiguous") continue
+      }
+      this.enqueueJournalWake(entry)
+    }
   }
 
   async requeueDispatchedParentWake(sessionID: string, reason: string): Promise<boolean> {
@@ -174,14 +228,69 @@ export class ParentWakeNotifier {
   }
 
   shutdown(): void {
+    clearInterval(this.watchdogTimer)
     this.pendingQueue.shutdown()
     this.dispatchedTracker.shutdown()
     this.sessionInspector.shutdown()
   }
 
+  private async runWatchdog(): Promise<void> {
+    const now = Date.now()
+    for (const entry of this.wakeJournal.list()) {
+      if (entry.state === "dispatching") {
+        const claimAge = entry.claimedAt === null ? CLAIM_TTL_MS : now - entry.claimedAt
+        if (claimAge < CLAIM_TTL_MS) continue
+        await this.recoverStaleWake(entry, "watchdog found stale dispatching wake")
+        continue
+      }
+      if (entry.state !== "dispatched-awaiting-output") continue
+      const dispatchedAt = entry.dispatchedAt ?? now
+      if (now - dispatchedAt < WAKE_WATCHDOG_INTERVAL_MS) continue
+      await this.recoverStaleWake(entry, "watchdog found accepted wake without output")
+    }
+  }
+
+  // A wake whose output already landed must be consumed, not replayed. A stale
+  // `dispatching` claim (crash between claim and prompt accept) has no persisted
+  // wake message, so identity-absent is replay-safe there; for an accepted wake
+  // only an empty unknown-finish assistant (exact identity) authorizes a retry.
+  private async recoverStaleWake(entry: WakeEntry, reason: string): Promise<void> {
+    const messages = await this.sessionInspector.getMessages(entry.sessionID)
+    if (!messages) return
+    const status = this.wakeJournal.recoveryStatus(entry, messages)
+    if (status === "output-observed") {
+      this.wakeJournal.consume(entry.wakeID, "assistant or tool output observed during watchdog sweep")
+      return
+    }
+    if (status === "identity-ambiguous") return
+    if (status === "identity-absent" && entry.state === "dispatched-awaiting-output") return
+    const outcome = this.wakeJournal.failOrRequeue(entry.wakeID, reason)
+    if (outcome === "dead-letter") this.reportDeadLetter(entry.wakeID, "watchdog retry budget exhausted")
+    if (outcome === "queued") this.enqueueJournalWake(entry)
+  }
+
+  private enqueueJournalWake(entry: WakeEntry): void {
+    this.pendingQueue.requeueWake(entry.sessionID, {
+      wakeID: entry.wakeID,
+      notifications: [entry.notificationText],
+      promptContext: entry.promptContext,
+      shouldReply: entry.shouldReply,
+      queuedAt: entry.history[0]?.at ?? Date.now(),
+    })
+    this.schedulePendingParentWakeFlush(entry.sessionID, 0)
+  }
+
   private requeueWake(sessionID: string, latestWake: PendingParentWake): void {
     this.pendingQueue.requeueWake(sessionID, latestWake)
     this.onPendingWakeRequeued?.(sessionID)
+  }
+
+  private reportDeadLetter(wakeID: string, reason: string): void {
+    const path = this.wakeJournal.pathFor(wakeID)
+    log("[background-agent] Parent wake moved to dead-letter:", { wakeID, reason, journalPath: path })
+    void this.flushRunner.showDeadLetterToast(path).catch((error: unknown) => {
+      log("[background-agent] Failed to show wake dead-letter toast:", { wakeID, journalPath: path, error })
+    })
   }
 
   private async shouldDeferParentWakeForSessionHistory(

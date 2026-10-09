@@ -101,6 +101,10 @@ export class ParentWakeSessionInspector {
     })
   }
 
+  async getMessages(sessionID: string): Promise<ParentWakeSessionMessage[] | undefined> {
+    return this.loadMessages(sessionID)
+  }
+
   shutdown(): void {
     this.recentParentSessionActivity.clear()
   }

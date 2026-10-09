@@ -13,6 +13,16 @@ type ParentWakePromptAsyncInput = {
 }
 
 export type ParentWakeNotifierClient = PromptDispatchClient & {
+  readonly tui?: {
+    readonly showToast: (input: {
+      readonly body: {
+        readonly title: string
+        readonly message: string
+        readonly variant: "error"
+        readonly duration: number
+      }
+    }) => Promise<unknown>
+  }
   readonly session: NonNullable<PromptDispatchClient["session"]> & {
     readonly messages: (input: {
       readonly path: { readonly id: string }

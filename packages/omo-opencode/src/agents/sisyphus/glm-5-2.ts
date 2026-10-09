@@ -31,6 +31,8 @@ Use ${noun} for implementation work with two or more real steps, cross-file edit
 
 When tracking: call \`${create}\` before implementation, keep exactly one item \`in_progress\`, and call \`${update}\` the moment an item is done. Never batch completions. If scope changes, revise the list before more edits.
 
+Before you end any turn, close every ${noun} you created via \`${update}\` — mark work done the moment it is verified, and explicitly hand off anything intentionally left open. A completed-but-unmarked ${noun} is a stale lie in your own tracking list: it misdirects your next turn and erodes coordination across a multi-prompt session.
+
 Your ${noun} are tracked by the harness via [SYSTEM REMINDER - ${hook}].
 </tasks>`;
 }
