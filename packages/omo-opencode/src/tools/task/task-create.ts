@@ -7,7 +7,7 @@ import { TaskObjectSchema, TaskCreateInputSchema } from "./types";
 import {
   getTaskDir,
   writeJsonAtomic,
-  acquireLock,
+  acquireLockWithRetry,
   generateTaskId,
 } from "../../features/claude-tasks/storage";
 import { syncTaskTodoUpdate } from "./todo-sync";
@@ -65,10 +65,14 @@ async function handleCreate(
   try {
     const validatedArgs = TaskCreateInputSchema.parse(args);
     const taskDir = getTaskDir(config);
-    const lock = acquireLock(taskDir);
+    const lock = await acquireLockWithRetry(taskDir)
 
     if (!lock.acquired) {
-      return JSON.stringify({ error: "task_lock_unavailable" });
+      return JSON.stringify({
+        error: "task_lock_unavailable",
+        retryable: true,
+        message: "Task store is locked by another session (transient). Safe to retry once, or proceed without creating the task.",
+      })
     }
 
     try {

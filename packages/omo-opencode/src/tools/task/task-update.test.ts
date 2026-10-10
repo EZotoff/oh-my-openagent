@@ -424,4 +424,132 @@ describe("task_update tool", () => {
       expect(result.task.owner).toBe("alice")
     })
   })
+
+  describe("no-op and repeat protection", () => {
+    test("second identical status update is a no-op that skips the write", async () => {
+      //#given
+      const taskId = "T-test-noop-1"
+      const taskPath = join(testDir, `${taskId}.json`)
+      const initialTask: TaskObject = {
+        id: taskId,
+        subject: "Test subject",
+        description: "Test description",
+        status: "pending",
+        blocks: [],
+        blockedBy: [],
+        threadID: "sess-noop-1",
+      }
+      await Bun.write(taskPath, JSON.stringify(initialTask))
+      const ctx = { ...TEST_CONTEXT, sessionID: "sess-noop-1" }
+      const args = { id: taskId, status: "in_progress" as const }
+
+      //#when
+      const first = JSON.parse(await tool.execute(args, ctx))
+      const mtimeAfterFirst = (await Bun.file(taskPath).stat()).mtimeMs
+      const second = JSON.parse(await tool.execute(args, ctx))
+      const mtimeAfterSecond = (await Bun.file(taskPath).stat()).mtimeMs
+
+      //#then
+      expect(first.task.status).toBe("in_progress")
+      expect(first.noop).toBeUndefined()
+      expect(second.noop).toBe(true)
+      expect(second.task.status).toBe("in_progress")
+      expect(mtimeAfterSecond).toBe(mtimeAfterFirst)
+    })
+
+    test("third identical update is blocked with repeated_identical_call", async () => {
+      //#given
+      const taskId = "T-test-noop-2"
+      const taskPath = join(testDir, `${taskId}.json`)
+      const initialTask: TaskObject = {
+        id: taskId,
+        subject: "Test subject",
+        description: "Test description",
+        status: "pending",
+        blocks: [],
+        blockedBy: [],
+        threadID: "sess-noop-2",
+      }
+      await Bun.write(taskPath, JSON.stringify(initialTask))
+      const ctx = { ...TEST_CONTEXT, sessionID: "sess-noop-2" }
+      const args = { id: taskId, status: "in_progress" as const }
+
+      //#when
+      const first = JSON.parse(await tool.execute(args, ctx))
+      const second = JSON.parse(await tool.execute(args, ctx))
+      const third = JSON.parse(await tool.execute(args, ctx))
+
+      //#then
+      expect(first.noop).toBeUndefined()
+      expect(second.noop).toBe(true)
+      expect(third.error).toBe("repeated_identical_call")
+    })
+
+    test("different args reset the repeat counter", async () => {
+      //#given
+      const taskId = "T-test-noop-3"
+      const taskPath = join(testDir, `${taskId}.json`)
+      const initialTask: TaskObject = {
+        id: taskId,
+        subject: "Test subject",
+        description: "Test description",
+        status: "pending",
+        blocks: [],
+        blockedBy: [],
+        threadID: "sess-noop-3",
+      }
+      await Bun.write(taskPath, JSON.stringify(initialTask))
+      const ctx = { ...TEST_CONTEXT, sessionID: "sess-noop-3" }
+      const statusArgs = { id: taskId, status: "in_progress" as const }
+
+      //#when
+      await tool.execute(statusArgs, ctx)
+      const subjectResult = JSON.parse(
+        await tool.execute({ id: taskId, subject: "New subject" }, ctx),
+      )
+      const statusAgain = JSON.parse(await tool.execute(statusArgs, ctx))
+
+      //#then
+      expect(subjectResult.task.subject).toBe("New subject")
+      expect(statusAgain.error).toBeUndefined()
+      expect(statusAgain.noop).toBe(true)
+    })
+
+    test("lock failures do not count toward the repeat counter and carry retry guidance", async () => {
+      //#given
+      const taskId = "T-test-noop-4"
+      const taskPath = join(testDir, `${taskId}.json`)
+      const initialTask: TaskObject = {
+        id: taskId,
+        subject: "Test subject",
+        description: "Test description",
+        status: "pending",
+        blocks: [],
+        blockedBy: [],
+        threadID: "sess-noop-4",
+      }
+      await Bun.write(taskPath, JSON.stringify(initialTask))
+      const ctx = { ...TEST_CONTEXT, sessionID: "sess-noop-4" }
+      const args = { id: taskId, status: "in_progress" as const }
+      // Hold the lock with a fresh timestamp (not stale)
+      await Bun.write(join(testDir, ".lock"), JSON.stringify({ id: "other", timestamp: Date.now() }))
+
+      //#when
+      const locked = JSON.parse(await tool.execute(args, ctx))
+      await Bun.write(join(testDir, ".lock"), JSON.stringify({ id: "other", timestamp: Date.now() }))
+      const lockedAgain = JSON.parse(await tool.execute(args, ctx))
+      // Release the lock; the two failed attempts must not have counted
+      const { unlinkSync } = await import("fs")
+      unlinkSync(join(testDir, ".lock"))
+      const unlocked = JSON.parse(await tool.execute(args, ctx))
+
+      //#then
+      expect(locked.error).toBe("task_lock_unavailable")
+      expect(locked.retryable).toBe(true)
+      expect(locked.message).toContain("retry")
+      expect(lockedAgain.error).toBe("task_lock_unavailable")
+      expect(unlocked.error).toBeUndefined()
+      expect(unlocked.noop).toBeUndefined()
+    })
+  })
 })

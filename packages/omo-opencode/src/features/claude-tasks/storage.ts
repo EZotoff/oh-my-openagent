@@ -177,3 +177,18 @@ export function acquireLock(dirPath: string): { acquired: boolean; release: () =
     },
   }
 }
+
+export async function acquireLockWithRetry(
+  dirPath: string,
+  attempts = 2,
+  delayMs = 100,
+): Promise<{ acquired: boolean; release: () => void }> {
+  let lock = acquireLock(dirPath)
+  let attempt = 1
+  while (!lock.acquired && attempt < attempts) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+    lock = acquireLock(dirPath)
+    attempt += 1
+  }
+  return lock
+}
