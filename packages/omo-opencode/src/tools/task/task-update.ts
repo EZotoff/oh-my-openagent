@@ -7,7 +7,7 @@ import {
   getTaskDir,
   readJsonSafe,
   writeJsonAtomic,
-  acquireLock,
+  acquireLockWithRetry,
 } from "../../features/claude-tasks/storage";
 import { syncTaskTodoUpdate } from "./todo-sync";
 
@@ -16,6 +16,28 @@ const TASK_ID_PATTERN = /^T-[A-Za-z0-9-]+$/;
 function parseTaskId(id: string): string | null {
   if (!TASK_ID_PATTERN.test(id)) return null;
   return id;
+}
+
+const NOOP_MESSAGE =
+  "NO-OP: no fields changed. The task is already in the requested state — never repeat an identical task_update; proceed with the actual work."
+
+const REPEAT_LIMIT = 2
+
+// Tracks the last completed task_update per session to hard-stop degenerate
+// identical-call loops (2026-10-09 incident: 208 identical in_progress updates).
+const repeatTracker = new Map<string, { hash: string; count: number }>()
+
+function hashUpdateArgs(validatedArgs: Record<string, unknown>): string {
+  const keys = Object.keys(validatedArgs).sort()
+  return JSON.stringify(keys.map((key) => [key, validatedArgs[key]]))
+}
+
+function recordCompletedUpdate(sessionID: string, hash: string): void {
+  const prev = repeatTracker.get(sessionID)
+  repeatTracker.set(sessionID, {
+    hash,
+    count: prev && prev.hash === hash ? prev.count + 1 : 1,
+  })
 }
 
 export function createTaskUpdateTool(
@@ -29,6 +51,9 @@ Supports updating: subject, description, status, activeForm, owner, metadata.
 For blocks/blockedBy: use addBlocks/addBlockedBy to append (additive, not replacement).
 For metadata: merge with existing, set key to null to delete.
 Syncs to OpenCode Todo API after update.
+Re-asserting an unchanged value is a NO-OP and returns {noop:true} — never repeat an identical
+task_update; if you receive noop or {error:'repeated_identical_call'}, the task state is already
+set and you must proceed with the actual work.
 
 **IMPORTANT - Dependency Management:**
 Use \`addBlockedBy\` to declare dependencies on other tasks.
@@ -81,11 +106,24 @@ async function handleUpdate(
       return JSON.stringify({ error: "invalid_task_id" });
     }
 
-    const taskDir = getTaskDir(config);
-    const lock = acquireLock(taskDir);
+    const argsHash = hashUpdateArgs(validatedArgs)
+    const prevCall = repeatTracker.get(context.sessionID)
+    if (prevCall && prevCall.hash === argsHash && prevCall.count >= REPEAT_LIMIT) {
+      return JSON.stringify({
+        error: "repeated_identical_call",
+        message: `Identical task_update already completed ${prevCall.count}x in this session. This call is blocked until the arguments change — proceed with the actual work instead of re-issuing it.`,
+      })
+    }
+
+    const taskDir = getTaskDir(config)
+    const lock = await acquireLockWithRetry(taskDir)
 
     if (!lock.acquired) {
-      return JSON.stringify({ error: "task_lock_unavailable" });
+      return JSON.stringify({
+        error: "task_lock_unavailable",
+        retryable: true,
+        message: "Task store is locked by another session (transient). Safe to retry once with identical arguments, or proceed without updating.",
+      })
     }
 
     try {
@@ -95,6 +133,8 @@ async function handleUpdate(
       if (!task) {
         return JSON.stringify({ error: "task_not_found" });
       }
+
+      const before = JSON.stringify(task)
 
       if (validatedArgs.subject !== undefined) {
         task.subject = validatedArgs.subject;
@@ -131,12 +171,23 @@ async function handleUpdate(
         });
       }
 
-      const validatedTask = TaskObjectSchema.parse(task);
-      writeJsonAtomic(taskPath, validatedTask);
+      if (JSON.stringify(task) === before) {
+        recordCompletedUpdate(context.sessionID, argsHash)
+        return JSON.stringify({
+          noop: true,
+          task: TaskObjectSchema.parse(task),
+          message: NOOP_MESSAGE,
+        })
+      }
 
-      await syncTaskTodoUpdate(ctx, validatedTask, context.sessionID);
+      const validatedTask = TaskObjectSchema.parse(task)
+      writeJsonAtomic(taskPath, validatedTask)
 
-      return JSON.stringify({ task: validatedTask });
+      await syncTaskTodoUpdate(ctx, validatedTask, context.sessionID)
+
+      recordCompletedUpdate(context.sessionID, argsHash)
+
+      return JSON.stringify({ task: validatedTask })
     } finally {
       lock.release();
     }
