@@ -50,7 +50,7 @@ Calculate dependencies carefully to maximize parallel execution:
       repoURL: tool.schema.string().optional().describe("Repository URL"),
       parentID: tool.schema.string().optional().describe("Parent task ID"),
     },
-    execute: async (args, context) => {
+     execute: async (args, context) => {
       return handleCreate(args, config, ctx, context);
     },
   });
@@ -60,11 +60,11 @@ async function handleCreate(
   args: Record<string, unknown>,
   config: Partial<OhMyOpenCodeConfig>,
   ctx: PluginInput | undefined,
-  context: { sessionID: string },
+  context: { sessionID: string; directory: string },
 ): Promise<string> {
   try {
     const validatedArgs = TaskCreateInputSchema.parse(args);
-    const taskDir = getTaskDir(config);
+    const taskDir = getTaskDir(config, context.directory);
     const lock = await acquireLockWithRetry(taskDir)
 
     if (!lock.acquired) {
