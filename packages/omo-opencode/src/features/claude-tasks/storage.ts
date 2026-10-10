@@ -10,7 +10,7 @@ function ignoreClaudeTaskStorageError(error: unknown): void {
   throw error
 }
 
-export function getTaskDir(config: Partial<OhMyOpenCodeConfig> = {}): string {
+export function getTaskDir(config: Partial<OhMyOpenCodeConfig> = {}, directory?: string): string {
   const tasksConfig = config.sisyphus?.tasks
   const storagePath = tasksConfig?.storage_path
 
@@ -19,7 +19,7 @@ export function getTaskDir(config: Partial<OhMyOpenCodeConfig> = {}): string {
   }
 
   const configDir = getOpenCodeConfigDir({ binary: "opencode" })
-  const listId = resolveTaskListId(config)
+  const listId = resolveTaskListId(config, directory)
   return join(configDir, "tasks", listId)
 }
 
@@ -27,7 +27,7 @@ export function sanitizePathSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, "-") || "default"
 }
 
-export function resolveTaskListId(config: Partial<OhMyOpenCodeConfig> = {}): string {
+export function resolveTaskListId(config: Partial<OhMyOpenCodeConfig> = {}, directory?: string): string {
   const envId = process.env.ULTRAWORK_TASK_LIST_ID?.trim()
   if (envId) return sanitizePathSegment(envId)
 
@@ -36,6 +36,14 @@ export function resolveTaskListId(config: Partial<OhMyOpenCodeConfig> = {}): str
 
   const configId = config.sisyphus?.tasks?.task_list_id?.trim()
   if (configId) return sanitizePathSegment(configId)
+
+  // Prefer the session's project directory (ToolContext.directory) over
+  // process.cwd(): in `opencode serve` the plugin process cwd is the server's
+  // WorkingDirectory (typically $HOME), which funneled every hosted session
+  // into one shared task list and one contended lock (2026-10-10 incident).
+  if (directory) {
+    return sanitizePathSegment(basename(directory))
+  }
 
   return sanitizePathSegment(basename(process.cwd()))
 }
@@ -95,8 +103,8 @@ export function generateTaskId(): string {
   return `T-${randomUUID()}`
 }
 
-export function listTaskFiles(config: Partial<OhMyOpenCodeConfig> = {}): string[] {
-  const dir = getTaskDir(config)
+export function listTaskFiles(config: Partial<OhMyOpenCodeConfig> = {}, directory?: string): string[] {
+  const dir = getTaskDir(config, directory)
   if (!existsSync(dir)) return []
   return readdirSync(dir)
     .filter((f) => f.endsWith('.json') && f.startsWith('T-'))

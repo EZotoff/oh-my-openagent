@@ -97,7 +97,7 @@ async function handleUpdate(
   args: Record<string, unknown>,
   config: Partial<OhMyOpenCodeConfig>,
   ctx: PluginInput | undefined,
-  context: { sessionID: string },
+  context: { sessionID: string; directory: string },
 ): Promise<string> {
   try {
     const validatedArgs = TaskUpdateInputSchema.parse(args);
@@ -115,7 +115,7 @@ async function handleUpdate(
       })
     }
 
-    const taskDir = getTaskDir(config)
+    const taskDir = getTaskDir(config, context.directory)
     const lock = await acquireLockWithRetry(taskDir)
 
     if (!lock.acquired) {

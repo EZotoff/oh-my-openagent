@@ -22,8 +22,8 @@ Returns tasks excluding completed and deleted statuses by default.
 For each task's blockedBy field, filters to only include unresolved (non-completed) blockers.
 Returns summary format: id, subject, status, owner, blockedBy (not full description).`,
     args: {},
-    execute: async (): Promise<string> => {
-      const taskDir = getTaskDir(config)
+    execute: async (_args, context): Promise<string> => {
+      const taskDir = getTaskDir(config, context.directory)
 
       if (!existsSync(taskDir)) {
         return JSON.stringify({ tasks: [] })
